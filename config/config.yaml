@@ -1,19 +1,28 @@
 testing:
   sampling:
-    measurements_count: NULL
-    total_duration_seconds: NULL
-    sampling_frequency_hz: NULL
+    # Required: samples per second (> 0).
+    sampling_frequency_hz: 5.0
+    # Stopping limits: at least one is required; the run stops at whichever is reached first.
+    # Count = attempted requests, including failures. Use null to disable a limit.
+    measurements_count: 10
+    total_duration_seconds: 3.0
+    # Optional: maximum time for one request (default 5.0); clipped to the remaining duration.
+    request_timeout_seconds: 1.0
 
+# Ports and commands of the emulators started by main.py and examples/run_tests.py.
 ammeters:
-#  greenlee:
-#    port: 5000
-#    command: "MEASURE_GREENLEE -get_measurement"
-#  entes:
-#    port: 5001
-#    command: "MEASURE_ENTES -get_data"
-#  circutor:
-#    port: 5002
-#    command: "MEASURE_CIRCUTOR -get_measurement"
+  greenlee:
+    host: 127.0.0.1
+    port: 5001
+    command: "MEASURE_GREENLEE -get_measurement"
+  entes:
+    host: 127.0.0.1
+    port: 5002
+    command: "MEASURE_ENTES -get_data"
+  circutor:
+    host: 127.0.0.1
+    port: 5003
+    command: "MEASURE_CIRCUTOR -get_measurement -current"
 
 analysis:
   statistical_metrics:
