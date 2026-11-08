@@ -12,20 +12,25 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `base_ammeter.py`: Base class for all ammeter emulators.
   - `client.py`: Client to request current measurements from the ammeter emulators (returns a validated `float`).
 - `config/`
-  - `config.yaml`: Configuration file for the ammeter emulators.
+  - `config.yaml`: Sampling settings and the ammeters (host, port, command) to sample.
 - `examples/`
-  - `run_tests.py`: super lyze example for run test **don't use it**.
+  - `run_tests.py`: Sampling demo: starts the emulators and samples every configured ammeter (replaces the broken supplied placeholder).
 - `src/`
   - `testing/`
-    - `test_framework.py`: `AmmeterTestFramework` class to test the ammeter emulators (not yet implemented).
+    - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
+    - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
-    - `config.py`: Configuration settings.
-    - `logger.py`: Logging setup.
+    - `config.py`: Loads `config.yaml` and validates the sampling and ammeter sections.
+    - `logger.py`: Logging setup (supplied; not used yet).
     - `Utils.py`: Utility functions, including `generate_random_float`.
 - `tests/`
   - `test_client.py`: Unit tests for the client (fake socket and clock; no emulators needed).
+  - `test_sampling.py`: Scheduler tests with a fake clock, sleep and measurement function.
+  - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
+  - `fakes.py`: Shared fake clock, sleep and measurement function.
 - `pytest.ini`: pytest settings (test folder and import path).
-- `requirements-dev.txt`: Development dependencies (pytest).
+- `requirements.txt`: Runtime dependencies (PyYAML).
+- `requirements-dev.txt`: Development dependencies (runtime dependencies plus pytest).
 
 ## Usage
 
@@ -37,6 +42,50 @@ python main.py
 `main.py` starts the three emulators in background threads, waits 5 seconds for them to start listening, then sends one request to each port and prints the measurement each one returns. If any request fails, it prints the error and exits with code 1.
 
 `main.py` and the client use only the Python standard library; nothing needs to be installed to run it.
+
+### Sampling demo
+
+After the [development setup](#development-setup-and-tests) (which installs PyYAML into `.venv`), run from the project root:
+```powershell
+.\.venv\Scripts\python.exe -m examples.run_tests
+```
+(Linux / macOS: `.venv/bin/python -m examples.run_tests`.) It validates `config/config.yaml`, starts the three emulators the same way as `main.py` (including the 5-second startup delay), samples each configured ammeter with `AmmeterTestFramework().run_test(name)`, and prints a summary of each run. The emulators print their own lines while being sampled. The exit code is 1 if any attempt failed.
+
+### Sampling
+
+`AmmeterTestFramework(config_path=None).run_test(ammeter_type)` samples one ammeter (`"greenlee"`, `"entes"` or `"circutor"`, the keys of the `ammeters` section) using the settings in `testing.sampling`:
+
+| Setting | Required | Meaning |
+|---|---|---|
+| `sampling_frequency_hz` | yes | Samples per second (> 0, at most 1000). |
+| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included. |
+| `total_duration_seconds` | one of the two limits | Upper bound on the sampling window, in seconds. |
+| `request_timeout_seconds` | no (default 5.0) | Timeout for one request; clipped to the time remaining in the window. |
+
+Use `null` to leave out a limit. The configuration file is found relative to the project, not the current working directory. All settings and every ammeter entry are validated when `AmmeterTestFramework` is created, before any network activity; errors name the field, for example `testing.sampling: measurements_count must be a whole number or null, got 2.5 (float)`. Unknown keys are rejected to catch typos. YAML note: PyYAML reads `1e-3` (no decimal point) as text; write `1.0e-3` or `0.001`.
+
+**Schedule.** Slot *k* has the target time *k / f* after the start of the run; the first request is sent immediately, and targets are computed from the start time, so lateness does not accumulate.
+- A selected slot always runs, even if the wake-up from sleep is late; its actual start and lateness are recorded. If sleep returns early, the scheduler sleeps again, so it never samples before the target.
+- After an attempt finishes, the next attempt uses the earliest later slot whose target is at or after the finish time. Slots passed while the request was running are skipped (no catch-up requests) and counted in `skipped_slots`, but only slots inside the duration window. For example, at 2 Hz, a request that ends at 1.2 s skips the 0.5 s and 1.0 s targets and the next request starts at 1.5 s. A request ending exactly at 0.5 s may still use the 0.5 s slot; one ending at 0.5001 s skips it.
+- Slot decisions use the same arithmetic as the targets, so values such as 0.3 × 10 = 3.0000000000000004 do not cause a slot to be skipped.
+- Communication failures are recorded and sampling continues at the next slot; there are no automatic retries. Other exceptions (for example, programming errors) are not caught.
+
+**Stopping.**
+- `count_reached`: `measurements_count` attempts were made. If the count and the duration both stop the run after the same attempt, `count_reached` is reported.
+- `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end).
+- The window is [0, D): with the first sample at 0, the targets are those below D. For example, D = 1.2 s at 2 Hz gives targets 0, 0.5 and 1.0 s (three attempts, not 2.4); D = 1.0 s gives 0 and 0.5 s.
+
+**Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
+
+**Result** (a JSON-compatible `dict`): `ammeter`, `host`, `port`, `command`, the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, and `attempts`, one record per attempt:
+
+```json
+{"attempt": 2, "slot": 1, "scheduled_offset_s": 0.5, "start_offset_s": 0.5003, "lateness_s": 0.0003,
+ "elapsed_s": 0.0004, "effective_timeout_s": 1.0, "timeout_clipped_by_deadline": false,
+ "ok": true, "current_a": 0.0147}
+```
+
+A failed attempt has `"ok": false` and `"error": {"type": ..., "message": ...}` and **no** `current_a`, so later statistics cannot mistake a failure for 0 A. `effective_timeout_s` and `timeout_clipped_by_deadline` show whether the end of the window shortened the request timeout; this gives context for a timeout but does not prove whether the device or the short remaining time caused it. `src.testing.sampling.successful_values(result)` returns the successful values as a list.
 
 ### Client behaviour
 
@@ -55,7 +104,7 @@ It never returns `None` or a placeholder value for a failed measurement.
 
 ## Development Setup and Tests
 
-The tests need `pytest`, installed into a project-local virtual environment (the `.venv/` folder is ignored by Git). The supplied `requirements.txt` is not needed for this.
+The framework needs **PyYAML** (the only runtime dependency, in `requirements.txt`) and the tests need `pytest`. `requirements-dev.txt` includes both; install it into a project-local virtual environment (the `.venv/` folder is ignored by Git):
 
 Windows (PowerShell):
 ```powershell
@@ -71,7 +120,9 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-The client tests replace the socket and the clock with fakes, so they run in well under a second and do not start the emulators or open network connections.
+The tests replace the socket, clock, sleep and client with fakes, so they run in about a second and do not start the emulators, open network connections or really sleep.
+
+**Dependency change:** the supplied `requirements.txt` listed numpy, scipy, matplotlib, seaborn, pandas and pyyaml, none of which were used by the code. It now lists only PyYAML, following the "minimize external library dependencies" constraint. Libraries will be added back only if a later feature needs them.
 
 ## Ammeter Emulators
 
@@ -115,3 +166,8 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 
 - **Problem**: The client connected to `localhost` with `socket.create_connection`. On the development machine `localhost` resolved to `::1` (IPv6) first and then `127.0.0.1`, but the emulators listen on IPv4 only. `create_connection` gives each resolved address its own full timeout, and sending and receiving each had their own timeout too, so one request could take several times the configured timeout. In local measurements on that Windows machine, a successful request to `localhost` took about 2 s, and a request to a closed port with `timeout=1.0` took about 2 s (these are observations from one machine, not general rules).
 - **Fix**: The client now connects with an IPv4 socket directly to a numeric IPv4 address (default `127.0.0.1`) and uses one shared deadline across connecting, sending and receiving. In local measurements on the same machine (20 requests per emulator, timed after startup), the median successful request took about 0.3 ms and the slowest about 16 ms; a closed port with `timeout=1.0` failed after about 1.0 s.
+
+### 4. The test framework, configuration and example were unusable
+
+- **Problem**: `src/testing/test_framework.py` failed on import (`Dict` was not imported) and `run_test` was empty. `config/config.yaml` had the sampling values set to `NULL`, and its ammeter entries were commented out with the wrong ports (5000–5002) and the CIRCUTOR command without `-current`. `load_config` opened a path relative to the current working directory. `examples/run_tests.py` called `run_test()` without the required ammeter type.
+- **Fix**: Implemented sampling (see [Sampling](#sampling)) behind the existing `run_test(ammeter_type)` interface, with validated configuration that matches the working emulators and a default configuration path independent of the working directory. Replaced the example with a working [sampling demo](#sampling-demo). `main.py` and the emulators are unchanged.
