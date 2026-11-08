@@ -1,10 +1,11 @@
+import sys
 import threading
 import time
 
 from Ammeters.Circutor_Ammeter import CircutorAmmeter
 from Ammeters.Entes_Ammeter import EntesAmmeter
 from Ammeters.Greenlee_Ammeter import GreenleeAmmeter
-from Ammeters.client import request_current_from_ammeter
+from Ammeters.client import AmmeterCommunicationError, request_current_from_ammeter
 
 
 def run_greenlee_emulator():
@@ -30,6 +31,20 @@ if __name__ == "__main__":
 
     # Each emulator only responds when the request matches its full command exactly
     # (see get_current_command in the Ammeters/*_Ammeter.py classes).
-    request_current_from_ammeter(5001, b'MEASURE_GREENLEE -get_measurement')  # Greenlee Ammeter
-    request_current_from_ammeter(5002, b'MEASURE_ENTES -get_data')  # ENTES Ammeter
-    request_current_from_ammeter(5003, b'MEASURE_CIRCUTOR -get_measurement -current')  # CIRCUTOR Ammeter
+    requests = [
+        ("Greenlee", 5001, b'MEASURE_GREENLEE -get_measurement'),
+        ("ENTES", 5002, b'MEASURE_ENTES -get_data'),
+        ("CIRCUTOR", 5003, b'MEASURE_CIRCUTOR -get_measurement -current'),
+    ]
+
+    failures = 0
+    for name, port, command in requests:
+        try:
+            current = request_current_from_ammeter(port, command)
+        except AmmeterCommunicationError as error:
+            failures += 1
+            print(f"{name} measurement FAILED: {error}", file=sys.stderr)
+        else:
+            print(f"Received current measurement from {name} (port {port}): {current} A")
+
+    sys.exit(1 if failures else 0)
