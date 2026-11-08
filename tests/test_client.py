@@ -47,7 +47,10 @@ class FakeSocket:
     - ``connect_delay`` / ``send_delay``: fake seconds the operation takes (it still completes).
     - ``connect_error`` / ``send_error``: exception raised by the operation instead.
     - ``recv_script``: items returned (or raised) by successive recv() calls; an item may be
-      wrapped in Slow(seconds, item). When the script runs out, recv() returns b"" (server closed).
+      wrapped in Slow(seconds, item). Like a real socket, a recv() smaller than the scripted
+      bytes returns only the first ``bufsize`` bytes and keeps the rest for later calls; a Slow
+      item's delay is applied once, when it first becomes available. When the script runs out,
+      recv() returns b"" (server closed).
 
     The socket timeout in effect at each operation is recorded so tests can check the budget.
     """
@@ -61,6 +64,7 @@ class FakeSocket:
         self._send_delay = send_delay
         self._send_error = send_error
         self._timeout = None
+        self._unread = b""  # bytes from a scripted item not yet returned by recv()
         self.connected_to = None
         self.sent = b""
         self.connect_timeout = None
@@ -96,13 +100,35 @@ class FakeSocket:
     def recv(self, bufsize):
         self.recv_timeouts.append(self._timeout)
         self.recv_sizes.append(bufsize)
-        item = self._script.pop(0) if self._script else b""
-        if isinstance(item, Slow):
-            self._clock.now += item.seconds
-            item = item.result
-        if isinstance(item, BaseException):
-            raise item
-        return item[:bufsize]
+        if not self._unread:
+            item = self._script.pop(0) if self._script else b""
+            if isinstance(item, Slow):
+                self._clock.now += item.seconds
+                item = item.result
+            if isinstance(item, BaseException):
+                raise item
+            if not item:
+                return b""  # server closed the connection
+            self._unread = item
+        chunk, self._unread = self._unread[:bufsize], self._unread[bufsize:]
+        return chunk
+
+
+def test_fake_socket_keeps_unread_bytes_for_later_recv_calls():
+    sock = FakeSocket(FakeClock(), [b"12345"])
+
+    assert [sock.recv(2) for _ in range(4)] == [b"12", b"34", b"5", b""]
+
+
+def test_fake_socket_applies_slow_delay_once_per_item():
+    clock = FakeClock()
+    sock = FakeSocket(clock, [Slow(0.5, b"12345")])
+
+    assert sock.recv(2) == b"12"
+    assert clock.now == pytest.approx(1000.5)
+    assert sock.recv(2) == b"34"
+    assert sock.recv(2) == b"5"
+    assert clock.now == pytest.approx(1000.5)  # no extra delay for the remainder
 
 
 @pytest.fixture
@@ -147,6 +173,18 @@ def test_reassembles_response_split_across_reads(clock, use_socket):
     use_socket(FakeSocket(clock, [b"0.04", b"3331", b"06383"]))
 
     assert request_current_from_ammeter(PORT, COMMAND) == pytest.approx(0.0433310638)
+
+
+def test_reconstructs_response_longer_than_one_receive_chunk(clock, use_socket):
+    # 304 bytes arrive as one scripted item: more than one 256-byte recv() chunk,
+    # but within the default 1024-byte limit. float() accepts the leading zeros.
+    payload = b"0" * 300 + b"42.5"
+    sock = FakeSocket(clock, [payload])
+    use_socket(sock)
+
+    assert request_current_from_ammeter(PORT, COMMAND) == 42.5
+    # 256 bytes, then the remaining 48, then b"" when the server closes.
+    assert sock.recv_sizes == [256, 256, 256]
 
 
 def test_accepts_negative_and_exponent_values(clock, use_socket):
@@ -389,6 +427,11 @@ def test_rejects_invalid_timeout(bad_timeout):
         request_current_from_ammeter(PORT, COMMAND, timeout=bad_timeout)
 
 
-def test_rejects_non_positive_response_limit():
-    with pytest.raises(ValueError, match="max_response_bytes"):
-        request_current_from_ammeter(PORT, COMMAND, max_response_bytes=0)
+@pytest.mark.parametrize("bad_limit", [True, False, 1024.0, 1.5, "1024", None, 0, -1])
+def test_rejects_invalid_response_limit_before_network_activity(clock, use_socket, bad_limit):
+    created = use_socket(FakeSocket(clock, [b"1.0"]))
+
+    with pytest.raises(ValueError, match="max_response_bytes must be a positive integer"):
+        request_current_from_ammeter(PORT, COMMAND, max_response_bytes=bad_limit)
+
+    assert created == []  # no socket was created

@@ -63,8 +63,9 @@ def request_current_from_ammeter(
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) \
             or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a positive, finite number of seconds, got {timeout!r}")
-    if max_response_bytes <= 0:
-        raise ValueError(f"max_response_bytes must be positive, got {max_response_bytes!r}")
+    if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) \
+            or max_response_bytes <= 0:
+        raise ValueError(f"max_response_bytes must be a positive integer, got {max_response_bytes!r}")
     _validate_ipv4_host(host)
 
     deadline = monotonic() + timeout
