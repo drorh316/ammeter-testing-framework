@@ -1,0 +1,24 @@
+testing:
+  sampling:
+    measurements_count: NULL
+    total_duration_seconds: NULL
+    sampling_frequency_hz: NULL
+
+ammeters:
+#  greenlee:
+#    port: 5000
+#    command: "MEASURE_GREENLEE -get_measurement"
+#  entes:
+#    port: 5001
+#    command: "MEASURE_ENTES -get_data"
+#  circutor:
+#    port: 5002
+#    command: "MEASURE_CIRCUTOR -get_measurement"
+
+analysis:
+  statistical_metrics:
+  visualization:
+    enabled: true
+    plot_types:
+
+result_management:
