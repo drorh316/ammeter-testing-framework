@@ -46,5 +46,12 @@ results/
 *.log
 !sample_results/**
 
+# --- SQLite result archives and their sidecar files ---
+# Listed after the sample_results/ exception so archives are never committed, even there.
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
 # --- Original assignment documents (kept locally, not published) ---
 Exam/
