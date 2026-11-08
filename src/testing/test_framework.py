@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from Ammeters.client import request_current_from_ammeter
+from src.testing.analysis import summarize_measurements
 from src.testing.sampling import run_sampling
 from ..utils.config import load_config, parse_ammeters, parse_sampling_settings
 
@@ -36,7 +37,8 @@ class AmmeterTestFramework:
         """Sample the ammeter named ``ammeter_type`` (a key of the ``ammeters`` config section).
 
         Returns a JSON-compatible dict: the device, the effective sampling settings,
-        counts, elapsed time, stop reason, and one record per attempt.
+        counts, elapsed time, stop reason, one record per attempt, and an ``analysis``
+        section with statistics of the successful measurements only.
         """
         device = self.ammeters.get(ammeter_type)
         if device is None:
@@ -53,4 +55,6 @@ class AmmeterTestFramework:
             "port": device.port,
             "command": device.command.decode("ascii"),
             **result.to_dict(),
+            # Failed attempts have no value and are excluded, never counted as 0 A.
+            "analysis": summarize_measurements(result.successful_values),
         }

@@ -24,6 +24,8 @@ ammeters:
     port: 5003
     command: "MEASURE_CIRCUTOR -get_measurement -current"
 
+# Placeholders from the supplied template: these keys are not read yet. run_test()
+# always reports count, mean, median, population standard deviation, min and max.
 analysis:
   statistical_metrics:
   visualization:
