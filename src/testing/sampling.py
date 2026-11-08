@@ -17,6 +17,10 @@ are always computed from ``t0``, so lateness never accumulates.
   counted in ``skipped_slots``.
 - No attempt starts at or after the duration deadline ``t0 + D``. Each request's
   timeout is clipped to the time remaining before the deadline.
+- ``skipped_slots`` counts only slots whose target is before the deadline. If the
+  deadline passes while waiting for a selected slot, that slot and any later slots
+  before the deadline are counted as skipped. No slots are counted once the count
+  limit has stopped the run.
 
 Stopping
 --------
@@ -24,8 +28,17 @@ Stopping
 - ``duration_reached``: the duration limit prevents any further attempt, either because
   the next target is at or after the deadline (the run returns immediately, without
   sleeping until the deadline, so the elapsed time can be less than D) or because the
-  deadline passed while waiting for a slot.
+  deadline passed while waiting for a slot. A run can therefore end with zero attempts
+  if it starts too late to reach slot 0 before the deadline.
 - If both apply after the same attempt, ``count_reached`` takes precedence.
+
+Limits
+------
+The numeric limits below are implementation choices that keep a run bounded and its
+schedule representable as floating-point clock values. They are not assignment
+requirements, and they do not guarantee any timing precision. A run may make at most
+MAX_POTENTIAL_ATTEMPTS attempts, because every attempt record is kept in memory:
+settings whose limits would allow more are rejected before sampling starts.
 """
 import math
 import time
@@ -34,11 +47,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Ammeters.client import AmmeterCommunicationError
 
-# Sanity limits that keep the schedule representable and the run bounded.
+# Implementation limits (see "Limits" above): choices of this framework, not assignment
+# requirements and not guarantees of timing precision.
 MIN_SAMPLING_FREQUENCY_HZ = 1.0 / 86400  # one sample per day
 MAX_SAMPLING_FREQUENCY_HZ = 1000.0       # each sample is a separate TCP request
 MAX_TOTAL_DURATION_SECONDS = 7 * 86400.0  # one week
-MAX_MEASUREMENTS_COUNT = 1_000_000
+MAX_POTENTIAL_ATTEMPTS = 1_000_000       # attempt records kept in memory per run
 MAX_REQUEST_TIMEOUT_SECONDS = 3600.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
 
@@ -57,6 +71,16 @@ def _positive_finite_number(name: str, value, maximum: float, minimum: float = 0
     if value < minimum or value > maximum:
         raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}, got {value!r}")
     return float(value)
+
+
+def _slots_before(duration: float, frequency: float) -> int:
+    """Number of slots ``k >= 0`` with ``k / frequency < duration`` (same arithmetic as targets)."""
+    slots = math.ceil(duration * frequency)
+    while slots / frequency < duration:
+        slots += 1
+    while slots > 0 and (slots - 1) / frequency >= duration:
+        slots -= 1
+    return slots
 
 
 @dataclass(frozen=True)
@@ -79,8 +103,8 @@ class SamplingSettings:
             if isinstance(count, bool) or not isinstance(count, int):
                 raise ValueError(
                     f"measurements_count must be a whole number or null, got {count!r} ({type(count).__name__})")
-            if not 1 <= count <= MAX_MEASUREMENTS_COUNT:
-                raise ValueError(f"measurements_count must be between 1 and {MAX_MEASUREMENTS_COUNT}, got {count!r}")
+            if count < 1:
+                raise ValueError(f"measurements_count must be at least 1, got {count!r}")
 
         if self.total_duration_seconds is not None:
             duration = _positive_finite_number(
@@ -93,6 +117,30 @@ class SamplingSettings:
         timeout = _positive_finite_number(
             "request_timeout_seconds", self.request_timeout_seconds, maximum=MAX_REQUEST_TIMEOUT_SECONDS)
         object.__setattr__(self, "request_timeout_seconds", timeout)
+
+        if self.max_potential_attempts > MAX_POTENTIAL_ATTEMPTS:
+            raise ValueError(
+                f"the stopping limits allow up to {self.max_potential_attempts} attempts "
+                f"(measurements_count={self.measurements_count}, "
+                f"total_duration_seconds={self.total_duration_seconds}, "
+                f"sampling_frequency_hz={self.sampling_frequency_hz}); "
+                f"at most {MAX_POTENTIAL_ATTEMPTS} are allowed per run")
+
+    @property
+    def max_potential_attempts(self) -> int:
+        """Most attempts these limits allow: the tighter of the count and the duration bound.
+
+        The duration bound is the number of slots ``k`` with ``k / f < D``, computed with the
+        same floating-point division the scheduler uses. Because floating-point rounding is
+        monotonic, adding the run's start time cannot move a slot with ``k / f >= D`` before
+        the deadline, so a run never has more duration slots than this.
+        """
+        bounds = []
+        if self.measurements_count is not None:
+            bounds.append(self.measurements_count)
+        if self.total_duration_seconds is not None:
+            bounds.append(_slots_before(self.total_duration_seconds, self.sampling_frequency_hz))
+        return min(bounds)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -223,10 +271,19 @@ def run_sampling(
             slot -= 1
         return slot
 
+    # The schedule must be representable on this clock before anything is measured.
+    if not (math.isfinite(t0) and target(1) > t0):
+        raise ValueError(
+            f"the sampling interval 1/{frequency} s does not advance the clock reading {t0!r}; "
+            "the schedule cannot be represented")
     deadline = None
     end_slot = None  # first slot whose target is at or after the deadline
     if settings.total_duration_seconds is not None:
         deadline = t0 + settings.total_duration_seconds
+        if not (math.isfinite(deadline) and deadline > t0):
+            raise ValueError(
+                f"total_duration_seconds={settings.total_duration_seconds} does not give a finite deadline "
+                f"later than the clock reading {t0!r}; the duration cannot be represented on this clock")
         end_slot = first_slot_at_or_after(deadline, after=-1)
 
     attempts: List[AttemptRecord] = []
@@ -242,6 +299,8 @@ def run_sampling(
         while True:
             now = clock()
             if deadline is not None and now >= deadline:
+                # The selected slot and any later slots before the deadline were missed.
+                skipped += end_slot - slot
                 return finish(STOP_DURATION_REACHED)
             if now >= slot_target:
                 break

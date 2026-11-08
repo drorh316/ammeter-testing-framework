@@ -7,7 +7,7 @@ import pytest
 from Ammeters.client import AmmeterConnectionError, AmmeterTimeoutError
 from fakes import EndsAt, FakeMeasure, FakeTime
 from src.testing.sampling import (
-    MAX_MEASUREMENTS_COUNT,
+    MAX_POTENTIAL_ATTEMPTS,
     STOP_COUNT_REACHED,
     STOP_DURATION_REACHED,
     SamplingSettings,
@@ -228,10 +228,84 @@ def test_very_late_wake_up_still_runs_the_selected_slot_then_skips_passed_slots(
 
 
 def test_late_wake_up_at_or_after_the_deadline_does_not_start_a_request():
-    result, measure, _ = sample(settings(duration=1.0), wake_errors=[0.6])  # wakes at 1.1 s
+    # 2 Hz, D = 1 s: the first request takes 0.1 s; the sleep for slot 1 (0.5 s) wakes at 1.1 s.
+    result, measure, _ = sample(settings(duration=1.0), wake_errors=[0.6])
 
     assert len(measure.calls) == 1
     assert result.stop_reason == STOP_DURATION_REACHED
+    assert result.skipped_slots == 1  # slot 1 (0.5 s) was eligible but missed
+
+
+def test_oversleep_past_the_deadline_counts_every_eligible_missed_slot():
+    # 2 Hz, D = 2 s: the sleep for slot 1 wakes at 2.3 s. Slots at 0.5, 1.0 and 1.5 s were
+    # missed; targets at or after 2.0 s are outside the window and not counted.
+    result, measure, _ = sample(settings(duration=2.0), wake_errors=[1.8])
+
+    assert len(measure.calls) == 1
+    assert result.skipped_slots == 3
+    assert result.stop_reason == STOP_DURATION_REACHED
+
+
+def test_oversleep_landing_exactly_on_the_deadline_counts_the_selected_slot():
+    result, measure, _ = sample(settings(duration=1.0), wake_errors=[0.5])  # wakes at exactly 1.0 s
+
+    assert len(measure.calls) == 1
+    assert result.skipped_slots == 1
+
+
+def test_window_that_expires_before_the_first_attempt_returns_zero_attempts():
+    # A valid run whose execution is delayed: the clock reads 0.0 at the start, then 1.5 s,
+    # past the 1 s deadline, before slot 0 can start.
+    fake_time = FakeTime()
+    measure = FakeMeasure(fake_time)
+    readings = iter([0.0])
+
+    def delayed_clock():
+        reading = next(readings, None)
+        if reading is not None:
+            return reading
+        fake_time.now = max(fake_time.now, 1.5)
+        return fake_time.now
+
+    result = run_sampling(measure, settings(duration=1.0), clock=delayed_clock, sleep=fake_time.sleep)
+
+    assert measure.calls == []
+    assert result.attempts == []
+    assert (result.succeeded, result.failed) == (0, 0)
+    assert result.skipped_slots == 2  # slots 0 and 0.5 s, both before the deadline
+    assert result.stop_reason == STOP_DURATION_REACHED
+    assert result.to_dict()["counts"] == {"attempted": 0, "succeeded": 0, "failed": 0, "skipped_slots": 2}
+
+
+# --- Unrepresentable schedules ---------------------------------------------------
+
+def test_duration_that_rounds_away_on_the_clock_is_rejected_before_measuring():
+    # At 1e16 the spacing between floats is 2.0, so 1e16 + 1.0 == 1e16: the deadline would
+    # not be later than the start. The sampling interval (4 s at 0.25 Hz) still advances.
+    with pytest.raises(ValueError, match="total_duration_seconds=1.0 does not give a finite deadline"):
+        sample(settings(frequency=0.25, duration=1.0), start=1e16)
+
+
+def test_interval_that_does_not_advance_the_clock_is_rejected_before_measuring():
+    # At 1e14 the spacing between floats is 1/64 s, so a 1 ms interval does not advance it.
+    fake_time = FakeTime(start=1e14)
+    measure = FakeMeasure(fake_time)
+
+    with pytest.raises(ValueError, match="sampling interval .* does not advance the clock"):
+        run_sampling(measure, settings(frequency=1000.0, count=3), clock=fake_time.clock, sleep=fake_time.sleep)
+
+    assert measure.calls == []
+
+
+@pytest.mark.parametrize("bad_start", [math.nan, math.inf])
+def test_non_finite_clock_reading_is_rejected_before_measuring(bad_start):
+    fake_time = FakeTime(start=bad_start)
+    measure = FakeMeasure(fake_time)
+
+    with pytest.raises(ValueError, match="does not advance the clock"):
+        run_sampling(measure, settings(count=3), clock=fake_time.clock, sleep=fake_time.sleep)
+
+    assert measure.calls == []
 
 
 def test_early_wake_up_sleeps_again_instead_of_sampling_early():
@@ -275,9 +349,8 @@ def test_result_dict_is_json_serializable_and_complete():
         ("sampling_frequency_hz", None, "must be a number"),
         ("sampling_frequency_hz", 1e-9, "between"),
         ("sampling_frequency_hz", 1e6, "between"),
-        ("measurements_count", 0, "between"),
-        ("measurements_count", -1, "between"),
-        ("measurements_count", MAX_MEASUREMENTS_COUNT + 1, "between"),
+        ("measurements_count", 0, "at least 1"),
+        ("measurements_count", -1, "at least 1"),
         ("measurements_count", 2.5, "whole number"),
         ("measurements_count", 10.0, "whole number"),
         ("measurements_count", "10", "whole number"),
@@ -301,6 +374,58 @@ def test_invalid_settings_are_rejected_with_the_field_name(field, value, message
         SamplingSettings(**kwargs)
 
     assert field in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "frequency, duration, expected",
+    [
+        (2.0, 1.0, 2),    # targets 0, 0.5
+        (2.0, 1.2, 3),    # targets 0, 0.5, 1.0 (D*f = 2.4 is not a whole number)
+        (3.0, 1.0, 3),    # targets 0, 1/3, 2/3
+        (10.0, 0.3, 3),   # 0.3 * 10 = 3.0000000000000004 must not add a fourth slot
+        (1000.0, 0.0015, 2),
+    ],
+)
+def test_duration_bound_counts_targets_inside_the_window(frequency, duration, expected):
+    assert settings(frequency=frequency, duration=duration).max_potential_attempts == expected
+
+
+@pytest.mark.parametrize("frequency, duration", [(2.0, 1.0), (2.0, 1.2), (3.0, 1.0), (10.0, 0.3), (7.0, 2.5)])
+@pytest.mark.parametrize("start", [0.0, 1000.0, 123456.789])
+def test_duration_bound_matches_the_attempts_a_run_actually_makes(frequency, duration, start):
+    s = settings(frequency=frequency, duration=duration)
+    result, _, _ = sample(s, start=start, default=(0.0, 1.0))  # instant requests: every slot is used
+
+    assert len(result.attempts) == s.max_potential_attempts
+
+
+def test_duration_only_settings_above_the_attempt_limit_are_rejected():
+    # 1000 Hz for one week would allow 604,800,000 attempt records.
+    with pytest.raises(ValueError, match="allow up to 604800000 attempts"):
+        settings(frequency=1000.0, duration=604800.0)
+
+
+def test_duration_bound_exactly_at_the_limit_is_accepted_and_one_more_is_rejected():
+    assert settings(frequency=2.0, duration=500_000.0).max_potential_attempts == MAX_POTENTIAL_ATTEMPTS
+
+    with pytest.raises(ValueError, match=f"allow up to {MAX_POTENTIAL_ATTEMPTS + 1} attempts"):
+        settings(frequency=2.0, duration=500_000.5)
+
+
+def test_count_only_limit_is_bounded():
+    assert settings(count=MAX_POTENTIAL_ATTEMPTS).max_potential_attempts == MAX_POTENTIAL_ATTEMPTS
+
+    with pytest.raises(ValueError, match="at most 1000000 are allowed"):
+        settings(count=MAX_POTENTIAL_ATTEMPTS + 1)
+
+
+def test_tighter_limit_applies_when_both_are_configured():
+    # A large count is fine when the duration allows only 10 attempts, and vice versa.
+    assert settings(frequency=1.0, count=2_000_000, duration=10.0).max_potential_attempts == 10
+    assert settings(frequency=1000.0, count=5, duration=604800.0).max_potential_attempts == 5
+
+    with pytest.raises(ValueError, match="allow up to"):
+        settings(frequency=1000.0, count=2_000_000, duration=604800.0)
 
 
 def test_at_least_one_stopping_limit_is_required():

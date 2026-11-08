@@ -49,7 +49,7 @@ After the [development setup](#development-setup-and-tests) (which installs PyYA
 ```powershell
 .\.venv\Scripts\python.exe -m examples.run_tests
 ```
-(Linux / macOS: `.venv/bin/python -m examples.run_tests`.) It validates `config/config.yaml`, starts the three emulators the same way as `main.py` (including the 5-second startup delay), samples each configured ammeter with `AmmeterTestFramework().run_test(name)`, and prints a summary of each run. The emulators print their own lines while being sampled. The exit code is 1 if any attempt failed.
+(Linux / macOS: `.venv/bin/python -m examples.run_tests`.) It validates `config/config.yaml`, starts the three emulators the same way as `main.py` (including the 5-second startup delay), samples each configured ammeter with `AmmeterTestFramework().run_test(name)`, and prints a summary of each run. The emulators print their own lines while being sampled. The exit code is 0 only if every ammeter had at least one attempt and no attempt failed; a run with no attempts is reported as "NO MEASUREMENTS" with its timing shown as unavailable.
 
 ### Sampling
 
@@ -57,22 +57,25 @@ After the [development setup](#development-setup-and-tests) (which installs PyYA
 
 | Setting | Required | Meaning |
 |---|---|---|
-| `sampling_frequency_hz` | yes | Samples per second (> 0, at most 1000). |
-| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included. |
-| `total_duration_seconds` | one of the two limits | Upper bound on the sampling window, in seconds. |
-| `request_timeout_seconds` | no (default 5.0) | Timeout for one request; clipped to the time remaining in the window. |
+| `sampling_frequency_hz` | yes | Samples per second (from 1/86400 to 1000). |
+| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included (at least 1). |
+| `total_duration_seconds` | one of the two limits | Upper bound on the sampling window, in seconds (at most 604800, one week). |
+| `request_timeout_seconds` | no (default 5.0) | Timeout for one request (at most 3600); clipped to the time remaining in the window. |
+
+**Implementation limits.** The numeric ranges above, and a maximum of **1,000,000 potential attempts per run**, are choices of this implementation, not assignment requirements, and they do not promise any timing precision. Every attempt record is kept in memory, so a run is limited by the attempts its stopping limits could allow: the count, or the number of schedule targets inside the duration window, whichever is smaller when both are set. The duration bound is computed with the same arithmetic as the schedule, so it is never lower than the real number of targets (for example, 2 Hz for 500,000 s allows exactly 1,000,000 and is accepted; 500,000.5 s allows 1,000,001 and is rejected). Settings that exceed the limit are rejected before sampling starts rather than stopped early. When a run starts, it also checks that the sampling interval and the duration deadline can be represented on the clock (a duration too small to change the clock's floating-point value is rejected with `ValueError` before any request).
 
 Use `null` to leave out a limit. The configuration file is found relative to the project, not the current working directory. All settings and every ammeter entry are validated when `AmmeterTestFramework` is created, before any network activity; errors name the field, for example `testing.sampling: measurements_count must be a whole number or null, got 2.5 (float)`. Unknown keys are rejected to catch typos. YAML note: PyYAML reads `1e-3` (no decimal point) as text; write `1.0e-3` or `0.001`.
 
 **Schedule.** Slot *k* has the target time *k / f* after the start of the run; the first request is sent immediately, and targets are computed from the start time, so lateness does not accumulate.
 - A selected slot always runs, even if the wake-up from sleep is late; its actual start and lateness are recorded. If sleep returns early, the scheduler sleeps again, so it never samples before the target.
 - After an attempt finishes, the next attempt uses the earliest later slot whose target is at or after the finish time. Slots passed while the request was running are skipped (no catch-up requests) and counted in `skipped_slots`, but only slots inside the duration window. For example, at 2 Hz, a request that ends at 1.2 s skips the 0.5 s and 1.0 s targets and the next request starts at 1.5 s. A request ending exactly at 0.5 s may still use the 0.5 s slot; one ending at 0.5001 s skips it.
+- If the end of the duration window passes while waiting for a selected slot (for example, a very late wake-up), that slot and any later slots before the end of the window are counted as skipped. Targets at or after the end are never counted, and nothing is counted after the count limit has stopped the run.
 - Slot decisions use the same arithmetic as the targets, so values such as 0.3 × 10 = 3.0000000000000004 do not cause a slot to be skipped.
 - Communication failures are recorded and sampling continues at the next slot; there are no automatic retries. Other exceptions (for example, programming errors) are not caught.
 
 **Stopping.**
 - `count_reached`: `measurements_count` attempts were made. If the count and the duration both stop the run after the same attempt, `count_reached` is reported.
-- `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end).
+- `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end). A valid run can also end with zero attempts if it is delayed past the end of the window before the first request.
 - The window is [0, D): with the first sample at 0, the targets are those below D. For example, D = 1.2 s at 2 Hz gives targets 0, 0.5 and 1.0 s (three attempts, not 2.4); D = 1.0 s gives 0 and 0.5 s.
 
 **Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
