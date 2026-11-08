@@ -18,6 +18,7 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
 - `src/`
   - `testing/`
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
+    - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
     - `config.py`: Loads `config.yaml` and validates the sampling and ammeter sections.
@@ -27,6 +28,8 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `test_client.py`: Unit tests for the client (fake socket and clock; no emulators needed).
   - `test_sampling.py`: Scheduler tests with a fake clock, sleep and measurement function.
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
+  - `test_analysis.py`: Statistics tests.
+  - `test_demo_summary.py`: Demo summary tests (no emulators started).
   - `fakes.py`: Shared fake clock, sleep and measurement function.
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
@@ -80,7 +83,7 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 
 **Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
 
-**Result** (a JSON-compatible `dict`): `ammeter`, `host`, `port`, `command`, the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, and `attempts`, one record per attempt:
+**Result** (a JSON-compatible `dict`): `ammeter`, `host`, `port`, `command`, the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
 
 ```json
 {"attempt": 2, "slot": 1, "scheduled_offset_s": 0.5, "start_offset_s": 0.5003, "lateness_s": 0.0003,
@@ -89,6 +92,26 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 ```
 
 A failed attempt has `"ok": false` and `"error": {"type": ..., "message": ...}` and **no** `current_a`, so later statistics cannot mistake a failure for 0 A. `effective_timeout_s` and `timeout_clipped_by_deadline` show whether the end of the window shortened the request timeout; this gives context for a timeout but does not prove whether the device or the short remaining time caused it. `src.testing.sampling.successful_values(result)` returns the successful values as a list.
+
+### Analysis
+
+Every `run_test` result also has an `analysis` section, computed by `summarize_measurements` in `src/testing/analysis.py` from the **successful measurements only**. Failed attempts have no value and are left out; they are never counted as 0 A. All values are in amperes (A) and kept at full floating-point precision; the demo rounds them only for display.
+
+| Key | Meaning |
+|---|---|
+| `count` | Number of successful measurements used. |
+| `mean_a` | Arithmetic mean. |
+| `median_a` | Middle value; with an even count, the mean of the two middle values. |
+| `stddev_population_a` | **Population** standard deviation (`statistics.pstdev`). |
+| `min_a`, `max_a` | Smallest and largest measurement. |
+
+- The **population** standard deviation is used because the metric describes the spread of the measurements collected in this run, not an estimate for a larger population (that would be the sample standard deviation, `statistics.stdev`).
+- With no successful measurements, `count` is 0 and every metric is `null`. With one, the mean, median, minimum and maximum are that value and the standard deviation is 0.0.
+- The metrics are computed with Python's `statistics` module; no other library is used. Zero and negative values are valid, and no acceptance thresholds are applied.
+- Values that are not finite numbers (booleans, text, NaN, infinity) are rejected with `ValueError` rather than skipped. If finite but extreme values would give a statistic that is not a finite float (for example, the median of two values near the largest float), a `ValueError` is raised instead of returning infinity, so results stay strict JSON.
+- The five metrics are always computed; the `analysis.statistical_metrics` key in `config.yaml` is an unused placeholder.
+
+A small standard deviation shows that a run's measurements were consistent, not that they were accurate. The three emulators generate independent random values and have no shared reference or known true current, so these statistics cannot show which ammeter is more accurate.
 
 ### Client behaviour
 

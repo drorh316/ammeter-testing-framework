@@ -21,6 +21,21 @@ from src.testing.test_framework import AmmeterTestFramework
 STARTUP_DELAY_SECONDS = 5  # same fixed delay as main.py
 
 
+def _amperes(value) -> str:
+    """Display a metric rounded to 6 significant digits, or N/A if unavailable."""
+    return "N/A" if value is None else f"{value:.6g} A"
+
+
+def format_statistics(analysis: Dict[str, Any]) -> List[str]:
+    """Summary lines for the ``analysis`` section of a run_test() result."""
+    return [
+        f"  statistics of {analysis['count']} successful measurement(s): "
+        f"mean {_amperes(analysis['mean_a'])}, median {_amperes(analysis['median_a'])}, "
+        f"population std dev {_amperes(analysis['stddev_population_a'])}",
+        f"  min {_amperes(analysis['min_a'])}, max {_amperes(analysis['max_a'])}",
+    ]
+
+
 def summarize_run(name: str, result: Dict[str, Any]) -> Tuple[List[str], bool]:
     """Summary lines for one run_test() result, and whether it demonstrates successful sampling.
 
@@ -32,6 +47,7 @@ def summarize_run(name: str, result: Dict[str, Any]) -> Tuple[List[str], bool]:
         f"{name} (port {result['port']}): stop reason {result['stop_reason']}, elapsed {result['elapsed_s']:.3f} s",
         f"  attempted {counts['attempted']}, succeeded {counts['succeeded']}, "
         f"failed {counts['failed']}, skipped slots {counts['skipped_slots']}",
+        *format_statistics(result["analysis"]),
     ]
     if not attempts:
         lines.append("  timing: unavailable (no attempts were made)")

@@ -203,7 +203,50 @@ def test_run_test_samples_the_selected_ammeter_through_the_client(tmp_path):
     assert result["stop_reason"] == "count_reached"
     assert [a["current_a"] for a in result["attempts"]] == [1.25, 1.25]
     assert [a["start_offset_s"] for a in result["attempts"]] == pytest.approx([0.0, 0.5])
-    json.dumps(result)  # JSON-compatible
+    assert result["analysis"] == {
+        "count": 2, "mean_a": 1.25, "median_a": 1.25, "stddev_population_a": 0.0, "min_a": 1.25, "max_a": 1.25,
+    }
+    json.dumps(result, allow_nan=False)  # strict JSON
+
+
+def mixed_config(count):
+    data = json.loads(json.dumps(VALID_CONFIG))
+    data["testing"]["sampling"]["measurements_count"] = count
+    return data
+
+
+def test_analysis_uses_only_successful_measurements(tmp_path):
+    fake_time = FakeTime()
+    outcomes = [1.0, AmmeterConnectionError(5001, "refused"), 3.0, AmmeterConnectionError(5001, "refused")]
+    request = RecordingRequest(fake_time, outcomes=outcomes)
+    fw = framework(write_config(tmp_path, mixed_config(4)), request, fake_time)
+
+    result = fw.run_test("greenlee")
+
+    assert result["counts"] == {"attempted": 4, "succeeded": 2, "failed": 2, "skipped_slots": 0}
+    # Mean of 1.0 and 3.0 only. Substituting 0 for the failures would give 1.0 and min 0.0.
+    assert result["analysis"] == {
+        "count": 2, "mean_a": 2.0, "median_a": 2.0, "stddev_population_a": 1.0, "min_a": 1.0, "max_a": 3.0,
+    }
+    assert [a["ok"] for a in result["attempts"]] == [True, False, True, False]
+    json.dumps(result, allow_nan=False)
+
+
+def test_all_failed_attempts_give_empty_analysis_and_keep_failure_records(tmp_path):
+    fake_time = FakeTime()
+    outcomes = [AmmeterConnectionError(5001, "refused")] * 3
+    request = RecordingRequest(fake_time, outcomes=outcomes)
+    fw = framework(write_config(tmp_path, mixed_config(3)), request, fake_time)
+
+    result = fw.run_test("greenlee")
+
+    assert result["analysis"] == {
+        "count": 0, "mean_a": None, "median_a": None, "stddev_population_a": None, "min_a": None, "max_a": None,
+    }
+    assert result["counts"] == {"attempted": 3, "succeeded": 0, "failed": 3, "skipped_slots": 0}
+    assert all(a["error"]["type"] == "AmmeterConnectionError" for a in result["attempts"])
+    assert result["stop_reason"] == "count_reached"
+    json.loads(json.dumps(result, allow_nan=False))  # None becomes null
 
 
 def test_run_test_records_client_failures(tmp_path):
