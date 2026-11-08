@@ -40,14 +40,15 @@ python main.py
 
 ### Client behaviour
 
-`request_current_from_ammeter(port, command, timeout=5.0, host="localhost", max_response_bytes=1024)` in `Ammeters/client.py`:
+`request_current_from_ammeter(port, command, timeout=5.0, host="127.0.0.1", max_response_bytes=1024)` in `Ammeters/client.py`:
 
 - Returns the measured current as a `float`.
 - Reads until the emulator closes the connection (which the emulators do after replying), so a response split across several TCP reads is reassembled.
-- `timeout` (seconds, must be positive and finite) applies to connecting and sending, and is also one overall deadline for receiving the whole response, however many partial reads that takes.
+- `timeout` (seconds, must be positive and finite) is **one shared budget** for the whole network exchange: connecting, sending the command, and receiving the complete response. One deadline is set before connecting; each blocking operation (`connect`, `sendall`, every `recv`) is given only the time left, and a response whose end arrives after the deadline is rejected. The total can still overrun slightly because of normal operating-system scheduling; it is not a hard real-time guarantee.
+- `host` must be a **numeric IPv4 address** (default `127.0.0.1`, where the emulators listen). Hostnames such as `localhost`, IPv6 addresses and DNS resolution are not supported; an unsupported value raises `ValueError` before any network activity.
 - Raises an `AmmeterCommunicationError` subclass that names the port, with the original exception kept as `__cause__`:
   - `AmmeterConnectionError`: the connection was refused, reset, or otherwise failed.
-  - `AmmeterTimeoutError`: no complete response within the timeout.
+  - `AmmeterTimeoutError`: connecting, sending and receiving did not all finish within the timeout budget.
   - `InvalidMeasurementError`: the response was empty (for example, an unrecognised command), larger than `max_response_bytes`, not UTF-8, not a number, or NaN/infinity.
 
 It never returns `None` or a placeholder value for a failed measurement.
@@ -109,3 +110,8 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 
 - **Problem**: `request_current_from_ammeter` only printed the reply and returned `None`. It had no timeout, so an unresponsive ammeter could block forever. It made a single `recv` call, so a response split across TCP reads (possible even on localhost) could be cut short. It did not validate the reply, and a wrong command just printed `No data received.`
 - **Fix**: The client now returns a validated `float`, reads until the server closes the connection within one overall deadline and a size limit, and raises a specific error naming the port for connection failures, timeouts, and invalid replies (see [Client behaviour](#client-behaviour)). Printing moved to `main.py`. Ports, commands, the emulators, and the 5-second startup delay are unchanged.
+
+### 3. The client timeout was not a limit on the whole request
+
+- **Problem**: The client connected to `localhost` with `socket.create_connection`. On the development machine `localhost` resolved to `::1` (IPv6) first and then `127.0.0.1`, but the emulators listen on IPv4 only. `create_connection` gives each resolved address its own full timeout, and sending and receiving each had their own timeout too, so one request could take several times the configured timeout. In local measurements on that Windows machine, a successful request to `localhost` took about 2 s, and a request to a closed port with `timeout=1.0` took about 2 s (these are observations from one machine, not general rules).
+- **Fix**: The client now connects with an IPv4 socket directly to a numeric IPv4 address (default `127.0.0.1`) and uses one shared deadline across connecting, sending and receiving. In local measurements on the same machine (20 requests per emulator, timed after startup), the median successful request took about 0.3 ms and the slowest about 16 ms; a closed port with `timeout=1.0` failed after about 1.0 s.
