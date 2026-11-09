@@ -187,6 +187,7 @@ def test_invalid_archive_is_an_operational_error(capsys, tmp_path):
     (["list", "--limit", "1001"], "must be from 1 to 1000"),
     (["list", "--limit", "ten"], "not a whole number"),
     (["list", "--wrong"], "unrecognized arguments"),
+    (["list", "--ammeter", ""], "argument --ammeter: must be a non-empty device name"),
     ([], "required: COMMAND"),
     (["--db", "a.sqlite3", "--config", "c.yaml", "list"], "not allowed with argument"),
 ])

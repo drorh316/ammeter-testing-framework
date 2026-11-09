@@ -2,6 +2,7 @@
 import json
 import math
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -341,6 +342,32 @@ def test_failed_write_removes_the_partial_new_file(tmp_path, monkeypatch):
 
     assert isinstance(excinfo.value.__cause__, OSError)
     assert not output.exists()
+
+
+def test_failed_cleanup_is_reported_and_the_partial_file_is_named(tmp_path, monkeypatch):
+    archive = archive_with(tmp_path, variant(tmp_path, 1))
+    output = tmp_path / "run.json"
+    monkeypatch.setattr(archive_module, "_create_exclusive", FailingStream)
+    original_unlink = Path.unlink
+    unlink_fails = True
+
+    def failing_unlink(self, *args, **kwargs):
+        if unlink_fails and self == output:
+            raise PermissionError(13, "Access is denied", str(self))
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ExportError) as excinfo:
+        archive.export_run(run_id(1), output)
+
+    message = str(excinfo.value)
+    assert "was removed" not in message
+    assert f"the partial file {output} could NOT be removed" in message
+    assert "Access is denied" in message and "No space left on device" in message
+    assert isinstance(excinfo.value.__cause__, OSError) and excinfo.value.__cause__.errno == 28
+    unlink_fails = False
+    assert output.exists() and len(output.read_bytes()) == 10  # the partial file is still there
 
 
 def test_serialization_happens_before_the_file_is_created(tmp_path, monkeypatch):

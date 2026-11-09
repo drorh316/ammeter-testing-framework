@@ -62,6 +62,12 @@ def _aware_datetime(text: str) -> datetime:
     return moment
 
 
+def _ammeter(text: str) -> str:
+    if not text:
+        raise argparse.ArgumentTypeError("must be a non-empty device name")
+    return text
+
+
 def _limit(text: str) -> int:
     try:
         value = int(text)
@@ -87,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     list_parser = commands.add_parser("list", help="summarize archived runs, newest first")
-    list_parser.add_argument("--ammeter", help="only runs of this device (exact, case-sensitive match)")
+    list_parser.add_argument("--ammeter", type=_ammeter, help="only runs of this device (exact, case-sensitive match)")
     list_parser.add_argument("--since", type=_aware_datetime, metavar="TIMESTAMP",
                              help="runs started at or after this time, e.g. 2026-11-08T00:00:00Z")
     list_parser.add_argument("--until", type=_aware_datetime, metavar="TIMESTAMP",

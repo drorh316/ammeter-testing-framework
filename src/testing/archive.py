@@ -683,12 +683,19 @@ class ResultArchive:
             with stream:
                 stream.write(data)
         except BaseException as exc:
+            cleanup_error: Optional[OSError] = None
             try:
                 output.unlink()
             except OSError as unlink_error:
+                cleanup_error = unlink_error
                 exc.add_note(f"the partial file {output} could not be removed: {unlink_error!r}")
             if isinstance(exc, OSError):
-                raise ExportError(f"writing {output} failed; the partial file was removed: {exc}") from exc
+                if cleanup_error is None:
+                    message = f"writing {output} failed; the partial file was removed: {exc}"
+                else:
+                    message = (f"writing {output} failed: {exc}; the partial file {output} could NOT be "
+                               f"removed ({cleanup_error}); delete it manually")
+                raise ExportError(message) from exc
             raise
         return output
 

@@ -202,7 +202,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 - The JSON is produced before the destination is created, with `allow_nan=False` (strict JSON).
 - The file is created exclusively: an existing file is never overwritten or removed, and the command fails instead.
 - The output directory must already exist.
-- If writing fails (for example, the disk is full), the partly written new file is removed.
+- If writing fails (for example, the disk is full), the partly written new file is removed. If it cannot be removed either, the error says so, names the file, and includes the reason, so it can be deleted by hand.
 - Export is not atomic: if the process is killed while writing, a partial file can remain.
 
 **Exit codes.**
