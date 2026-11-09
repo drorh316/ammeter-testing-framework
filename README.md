@@ -64,7 +64,7 @@ After the [development setup](#development-setup-and-tests) (which installs PyYA
 | Setting | Required | Meaning |
 |---|---|---|
 | `sampling_frequency_hz` | yes | Samples per second (from 1/86400 to 1000). |
-| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included (at least 1). |
+| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included (from 1 to 2⁶³ − 1, the signed 64-bit range the archive can store; checked even when the duration is the tighter limit). |
 | `total_duration_seconds` | one of the two limits | Upper bound on the sampling window, in seconds (at most 604800, one week). |
 | `request_timeout_seconds` | no (default 5.0) | Timeout for one request (at most 3600); clipped to the time remaining in the window. |
 
@@ -137,16 +137,17 @@ A missing or empty `result_management` section disables archiving. Generated dat
 | `measurements` | one row per attempt: slot, timing, effective timeout, clipped flag, and either `current_a` or the error type and message | foreign key to `runs`; primary key `(run_id, attempt)`; unique `(run_id, slot)`; exactly one of value or error |
 | `run_statistics` | one row per run: analysis status, successful count, the five metrics, or the analysis error | `run_id` primary key and foreign key; the metrics and error columns must match the status |
 
-Numeric columns must hold finite numbers of the right type. The cross-table counts (attempt rows, successful rows, statistics count) are checked in Python before saving and again when loading.
+Numeric columns must hold finite numbers of the right type. Integers must fit SQLite's signed 64-bit `INTEGER` range (−2⁶³ to 2⁶³ − 1); `save_run` rejects any integer field outside it with a field-specific `ValueError` before opening the database (otherwise `sqlite3` would raise `OverflowError`). The cross-table counts (attempt rows, successful rows, statistics count) are checked in Python before saving and again when loading.
 
 **Behaviour.**
 - A run and all its rows are saved in **one transaction**; if any insert fails, the whole save is rolled back, so a run is never partly archived. An existing run ID raises `DuplicateRunError` and the archived run is left unchanged.
 - Every connection enables foreign keys, uses parameterized SQL, and is closed explicitly.
-- Only a new or empty file is initialised. A file that is not a SQLite database, or a database created by something else, raises `ArchiveFormatError`; another schema version raises `UnsupportedSchemaVersionError`. Neither case changes the file. There is no migration code.
+- Only a new or empty file is initialised. A file that is not a SQLite database, a database created by something else, or an archive missing a required table or column raises `ArchiveFormatError`; another schema version raises `UnsupportedSchemaVersionError`. These checks run in both `save_run` and `load_run` before any run row is read or inserted, and none of these cases changes the file. Tables and columns are checked by name only (column types and constraints are not compared). There is no migration code.
 - `ResultArchive(path).load_run(run_id)` opens the file read-only: it never creates a missing file (`ArchiveNotFoundError`) and returns the same structure as `run_test`. A run whose rows are incomplete or inconsistent raises `ArchiveIntegrityError` instead of being returned.
 - If a completed run cannot be archived, `run_test` raises `ResultArchiveError`; its `result` attribute holds the complete in-memory result, and `__cause__` holds the storage error.
 - **Concurrency:** SQLite allows many readers but only one writer at a time. A save waits up to 5 seconds (`lock_timeout_s`) for the write lock and then raises `ArchiveLockedError`. This suits one test station, not many concurrent writers.
-- **Crash safety:** results are saved when a run finishes; a crash during a run loses that run's measurements (there is no incremental checkpointing).
+- **Crash during sampling:** a run is kept in memory and saved only when it finishes. If the sampling process crashes or is killed during a run, that run's measurements are lost (there is no incremental checkpointing).
+- **Crash during a save:** each save is a SQLite transaction protected by SQLite's rollback journal (the archive keeps SQLite's default journal and sync settings). If the process stops mid-save, the next connection that can write to the file (the next save) rolls back the partial save, so runs that were already committed are kept and the interrupted run is absent. Until that happens, a read-only `load_run` cannot do the rollback and raises `ArchiveError` (cause `SQLITE_READONLY_ROLLBACK`). This was checked by killing a process during a save. As with any SQLite database, it relies on the storage honouring flushes to disk.
 
 Listing, comparing and exporting archived runs are planned for the next stage.
 

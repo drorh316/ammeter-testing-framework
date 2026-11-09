@@ -16,14 +16,22 @@ Behaviour
 - Every connection enables foreign keys and is closed explicitly. All SQL values are
   passed as parameters.
 - Only a genuinely new or empty file is initialised. Any other file must carry this
-  archive's application id and schema version, otherwise it is rejected unchanged. There
-  is no migration code.
+  archive's application id and schema version and have every required table and
+  column (checked by name before any run row is read or inserted), otherwise it is
+  rejected unchanged. There is no migration code.
+- Integers must fit SQLite's signed 64-bit INTEGER; larger values are rejected by
+  validation before the database is opened.
 - Reads open the file read-only (mode=ro): they never create a missing file or change
   the schema. Loading checks that the measurement and statistics rows match the run's
   counts, so an incomplete run is reported instead of returned.
 - SQLite allows one writer at a time. A save waits at most ``lock_timeout_s`` for the
   write lock and then fails with ArchiveLockedError.
-- Results are saved only after a run finishes; a process crash loses the unsaved run.
+- A run is held in memory until it finishes and is saved only then: if the sampling
+  process crashes during a run, that run's measurements are lost. Runs already saved are
+  protected by SQLite's own transactions: if a save is interrupted, SQLite's rollback
+  journal restores the database to its state before that save the next time a writing
+  connection opens it. Until then a read-only load cannot complete that recovery and
+  fails with ArchiveError (cause SQLITE_READONLY_ROLLBACK).
 """
 import math
 import sqlite3
@@ -35,7 +43,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 SCHEMA_VERSION = 1
 APPLICATION_ID = 0x414D4D52  # "AMMR": identifies this archive format in the SQLite header
 DEFAULT_LOCK_TIMEOUT_SECONDS = 5.0
-REQUIRED_TABLES = frozenset({"runs", "measurements", "run_statistics"})
+# SQLite stores INTEGER values as signed 64-bit integers; sqlite3 raises OverflowError
+# (not a sqlite3.Error) for a larger Python int, so integers are range-checked first.
+SQLITE_INTEGER_MIN = -2**63
+SQLITE_INTEGER_MAX = 2**63 - 1
 
 # Finite-number checks compare against 9e999, which SQLite reads as infinity: "x < 9e999"
 # rejects +inf and "abs(x) < 9e999" rejects both. (SQLite 3.40 parses the literal
@@ -149,6 +160,14 @@ _STATISTICS_COLUMNS = (
     "min_a", "max_a", "error_type", "error_message",
 )
 _METRICS = ("mean_a", "median_a", "stddev_population_a", "min_a", "max_a")
+
+# Columns each table must have (checked by name only; types and constraints are not compared).
+REQUIRED_COLUMNS = {
+    "runs": _RUN_COLUMNS,
+    "measurements": _MEASUREMENT_COLUMNS,
+    "run_statistics": _STATISTICS_COLUMNS,
+}
+REQUIRED_TABLES = frozenset(REQUIRED_COLUMNS)
 
 
 def _insert_sql(table: str, columns: Tuple[str, ...]) -> str:
@@ -275,6 +294,12 @@ def _check_identity(conn: sqlite3.Connection, path: Path) -> None:
     missing = REQUIRED_TABLES - tables
     if missing:
         raise ArchiveFormatError(f"{path} is missing archive table(s): {', '.join(sorted(missing))}")
+    missing_columns = []
+    for table, columns in REQUIRED_COLUMNS.items():
+        present = {name for (name,) in conn.execute("SELECT name FROM pragma_table_info(?)", (table,))}
+        missing_columns += [f"{table}.{column}" for column in columns if column not in present]
+    if missing_columns:
+        raise ArchiveFormatError(f"{path} is missing archive column(s): {', '.join(missing_columns)}")
 
 
 # --- Validation and conversion -------------------------------------------------------
@@ -286,6 +311,9 @@ def _number(name: str, value, *, integer: bool = False, nullable: bool = False):
         raise ValueError(f"{name} is required")
     if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
         raise ValueError(f"{name} must be {'an integer' if integer else 'a number'}, got {value!r}")
+    if integer and not SQLITE_INTEGER_MIN <= value <= SQLITE_INTEGER_MAX:
+        raise ValueError(f"{name} must be between {SQLITE_INTEGER_MIN} and {SQLITE_INTEGER_MAX} "
+                         f"(SQLite's signed 64-bit INTEGER range), got {value!r}")
     if not integer:
         value = float(value)
         if not math.isfinite(value):

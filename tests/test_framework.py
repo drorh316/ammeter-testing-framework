@@ -145,6 +145,18 @@ def test_invalid_settings_raise_field_specific_errors(tmp_path, section, key, va
     assert request.calls == []
 
 
+def test_count_beyond_the_64_bit_range_is_rejected_before_sampling(tmp_path):
+    request = RecordingRequest()
+    data = config_with("sampling", "measurements_count", 2**63)
+    data["testing"]["sampling"]["total_duration_seconds"] = 0.5  # would limit the run to one attempt
+    path = write_config(tmp_path, data)
+
+    with pytest.raises(ConfigError, match=r"testing\.sampling: measurements_count must be at most 9223372036854775807"):
+        framework(path, request)
+
+    assert request.calls == []
+
+
 def test_yaml_exponent_without_decimal_point_is_reported_as_a_string(tmp_path):
     # PyYAML (YAML 1.1) reads 1e-3 as the string "1e-3", not as a number.
     text = yaml.safe_dump(VALID_CONFIG).replace("sampling_frequency_hz: 2.0", "sampling_frequency_hz: 1e-3")

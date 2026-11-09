@@ -7,6 +7,7 @@ import pytest
 from Ammeters.client import AmmeterConnectionError, AmmeterTimeoutError
 from fakes import EndsAt, FakeMeasure, FakeTime
 from src.testing.sampling import (
+    MAX_MEASUREMENTS_COUNT,
     MAX_POTENTIAL_ATTEMPTS,
     STOP_COUNT_REACHED,
     STOP_DURATION_REACHED,
@@ -426,6 +427,19 @@ def test_tighter_limit_applies_when_both_are_configured():
 
     with pytest.raises(ValueError, match="allow up to"):
         settings(frequency=1000.0, count=2_000_000, duration=604800.0)
+
+
+def test_largest_storable_count_is_accepted_when_the_duration_limits_attempts():
+    assert MAX_MEASUREMENTS_COUNT == 2**63 - 1
+    s = settings(frequency=1.0, count=MAX_MEASUREMENTS_COUNT, duration=1.0)
+    assert s.measurements_count == MAX_MEASUREMENTS_COUNT and s.max_potential_attempts == 1
+
+
+@pytest.mark.parametrize("count", [2**63, 2**64, 10**30])
+def test_count_beyond_the_64_bit_range_is_rejected_even_with_a_short_duration(count):
+    # The duration alone would allow only one attempt, but the count itself cannot be archived.
+    with pytest.raises(ValueError, match=f"measurements_count must be at most {2**63 - 1}.*got {count}"):
+        settings(frequency=1.0, count=count, duration=1.0)
 
 
 def test_at_least_one_stopping_limit_is_required():

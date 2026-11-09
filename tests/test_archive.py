@@ -21,9 +21,11 @@ from src.testing.archive import (
     ArchiveNotFoundError,
     DuplicateRunError,
     ResultArchive,
+    SQLITE_INTEGER_MAX,
     RunNotFoundError,
     UnsupportedSchemaVersionError,
 )
+from src.testing.sampling import MAX_MEASUREMENTS_COUNT
 from src.testing.test_framework import AmmeterTestFramework
 
 RUN_A = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -227,6 +229,40 @@ def test_invalid_results_are_rejected_before_touching_the_database(tmp_path, mut
     assert not db.exists()
 
 
+def test_integers_at_the_64_bit_limit_are_stored_exactly(tmp_path):
+    db = tmp_path / "archive.sqlite3"
+    result = mixed_result(tmp_path)
+    result["settings"]["measurements_count"] = SQLITE_INTEGER_MAX
+    result["counts"]["skipped_slots"] = SQLITE_INTEGER_MAX
+    ResultArchive(db).save_run(result)
+
+    loaded = ResultArchive(db).load_run(RUN_A)
+
+    assert loaded == result
+    assert loaded["settings"]["measurements_count"] == 2**63 - 1
+
+
+@pytest.mark.parametrize(
+    "mutate, field",
+    [
+        (lambda r: r["settings"].update(measurements_count=2**63), "settings.measurements_count"),
+        (lambda r: r["counts"].update(skipped_slots=2**63), "counts.skipped_slots"),
+        (lambda r: r["attempts"][1].update(slot=2**64), r"attempts\[1\].slot"),
+        (lambda r: r.update(port=-2**63 - 1), "port"),
+    ],
+)
+def test_integers_outside_the_64_bit_range_are_rejected_before_touching_the_database(tmp_path, mutate, field):
+    # Without this check sqlite3 raises OverflowError, which is not an ArchiveError.
+    db = tmp_path / "archive.sqlite3"
+    result = mixed_result(tmp_path)
+    mutate(result)
+
+    with pytest.raises(ValueError, match=rf"^{field} must be between -9223372036854775808 and 9223372036854775807"):
+        ResultArchive(db).save_run(result)
+
+    assert not db.exists()
+
+
 @pytest.mark.parametrize("bad_timeout", [-1, math.nan, math.inf, True, "5"])
 def test_lock_timeout_is_validated(tmp_path, bad_timeout):
     with pytest.raises(ValueError, match="lock_timeout_s"):
@@ -388,6 +424,31 @@ def test_archive_with_a_missing_table_is_rejected(tmp_path):
 
     with pytest.raises(ArchiveFormatError, match="missing archive table"):
         ResultArchive(db).load_run(RUN_A)
+
+
+@pytest.mark.parametrize(
+    "table, column",
+    [("runs", "host"), ("measurements", "current_a"), ("run_statistics", "mean_a")],
+)
+def test_archive_with_a_missing_column_is_rejected_unchanged(tmp_path, table, column):
+    db = tmp_path / "archive.sqlite3"
+    ResultArchive(db).save_run(mixed_result(tmp_path, RUN_A))
+    raw_execute(db, f"ALTER TABLE {table} RENAME COLUMN {column} TO renamed_{column}")
+    original = db.read_bytes()
+    message = rf"missing archive column\(s\): {table}\.{column}$"
+
+    with pytest.raises(ArchiveFormatError, match=message):
+        ResultArchive(db).load_run(RUN_A)
+    with pytest.raises(ArchiveFormatError, match=message):
+        ResultArchive(db).save_run(mixed_result(tmp_path, RUN_B))
+
+    assert db.read_bytes() == original
+    with closing(sqlite3.connect(db)) as conn:
+        assert conn.execute("SELECT run_id FROM runs").fetchall() == [(RUN_A,)]  # RUN_B was not inserted
+
+
+def test_archive_and_sampling_agree_on_the_largest_count():
+    assert MAX_MEASUREMENTS_COUNT == SQLITE_INTEGER_MAX == 2**63 - 1
 
 
 def test_empty_existing_file_is_initialized_on_save_but_not_by_a_read(tmp_path):
