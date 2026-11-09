@@ -1,0 +1,154 @@
+{
+  "run_id": "503ea15b-e9b0-42a6-af17-c36aeb520856",
+  "ammeter": "greenlee",
+  "host": "127.0.0.1",
+  "port": 5001,
+  "command": "MEASURE_GREENLEE -get_measurement",
+  "started_at_utc": "2026-11-08T17:51:04.636532+00:00",
+  "ended_at_utc": "2026-11-08T17:51:06.447178+00:00",
+  "settings": {
+    "sampling_frequency_hz": 5.0,
+    "measurements_count": 10,
+    "total_duration_seconds": 3.0,
+    "request_timeout_seconds": 1.0
+  },
+  "counts": {
+    "attempted": 10,
+    "succeeded": 10,
+    "failed": 0,
+    "skipped_slots": 0
+  },
+  "elapsed_s": 1.8110225999262184,
+  "stop_reason": "count_reached",
+  "attempts": [
+    {
+      "attempt": 1,
+      "slot": 0,
+      "scheduled_offset_s": 0.0,
+      "start_offset_s": 9.499955922365189e-06,
+      "lateness_s": 9.499955922365189e-06,
+      "elapsed_s": 0.0007805000059306622,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.06577930078766452
+    },
+    {
+      "attempt": 2,
+      "slot": 1,
+      "scheduled_offset_s": 0.2,
+      "start_offset_s": 0.2004513000138104,
+      "lateness_s": 0.0004513000138103851,
+      "elapsed_s": 0.0004878999898210168,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.5897885526071969
+    },
+    {
+      "attempt": 3,
+      "slot": 2,
+      "scheduled_offset_s": 0.4,
+      "start_offset_s": 0.4006655999692157,
+      "lateness_s": 0.0006655999692156689,
+      "elapsed_s": 0.0005262000486254692,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.09859019205406239
+    },
+    {
+      "attempt": 4,
+      "slot": 3,
+      "scheduled_offset_s": 0.6,
+      "start_offset_s": 0.600669699953869,
+      "lateness_s": 0.0006696999538690074,
+      "elapsed_s": 0.0005043999990448356,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.1602306865287959
+    },
+    {
+      "attempt": 5,
+      "slot": 4,
+      "scheduled_offset_s": 0.8,
+      "start_offset_s": 0.8002049999777228,
+      "lateness_s": 0.0002049999777227196,
+      "elapsed_s": 0.000557500054128468,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.29094453644838425
+    },
+    {
+      "attempt": 6,
+      "slot": 5,
+      "scheduled_offset_s": 1.0,
+      "start_offset_s": 1.0005755999591202,
+      "lateness_s": 0.0005755999591201544,
+      "elapsed_s": 0.020404300070367754,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.04818394452782638
+    },
+    {
+      "attempt": 7,
+      "slot": 6,
+      "scheduled_offset_s": 1.2,
+      "start_offset_s": 1.2001624000258744,
+      "lateness_s": 0.0001624000258744207,
+      "elapsed_s": 0.02222529996652156,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.07003030134809268
+    },
+    {
+      "attempt": 8,
+      "slot": 7,
+      "scheduled_offset_s": 1.4,
+      "start_offset_s": 1.4001519000157714,
+      "lateness_s": 0.00015190001577147783,
+      "elapsed_s": 0.023864899994805455,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.28725310286431976
+    },
+    {
+      "attempt": 9,
+      "slot": 8,
+      "scheduled_offset_s": 1.6,
+      "start_offset_s": 1.60055229999125,
+      "lateness_s": 0.0005522999912499493,
+      "elapsed_s": 0.0004566999850794673,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.0973561694736763
+    },
+    {
+      "attempt": 10,
+      "slot": 9,
+      "scheduled_offset_s": 1.8,
+      "start_offset_s": 1.8004895999329165,
+      "lateness_s": 0.000489599932916418,
+      "elapsed_s": 0.010508900042623281,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.10172789487647653
+    }
+  ],
+  "analysis": {
+    "status": "ok",
+    "count": 10,
+    "mean_a": 0.18098846815164957,
+    "median_a": 0.10015904346526947,
+    "stddev_population_a": 0.1594424311081095,
+    "min_a": 0.04818394452782638,
+    "max_a": 0.5897885526071969
+  }
+}

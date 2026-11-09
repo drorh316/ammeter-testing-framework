@@ -16,10 +16,11 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
 - `examples/`
   - `run_tests.py`: Sampling demo: starts the emulators and samples every configured ammeter (replaces the broken supplied placeholder).
 - `src/`
+  - `archive_cli.py`: Command-line interface to the archive: `list`, `show`, `compare`, `export`.
   - `testing/`
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
-    - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load).
+    - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load, list, compare, export).
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
     - `config.py`: Loads `config.yaml` and validates the sampling and ammeter sections.
@@ -32,8 +33,11 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `test_analysis.py`: Statistics tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
+  - `test_archive_queries.py`: Listing, filtering, comparison and export tests (real temporary archives).
+  - `test_archive_cli.py`: Command-line interface tests, including exit codes.
   - `fakes.py`: Shared fake clock, sleep and measurement function.
   - `conftest.py`: Stops any test from writing to the shipped results database.
+- `sample_results/`: Three runs exported from the demo archive, one per ammeter type (see its README).
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
 - `requirements-dev.txt`: Development dependencies (runtime dependencies plus pytest).
@@ -137,6 +141,22 @@ A missing or empty `result_management` section disables archiving. Generated dat
 | `measurements` | one row per attempt: slot, timing, effective timeout, clipped flag, and either `current_a` or the error type and message | foreign key to `runs`; primary key `(run_id, attempt)`; unique `(run_id, slot)`; exactly one of value or error |
 | `run_statistics` | one row per run: analysis status, successful count, the five metrics, or the analysis error | `run_id` primary key and foreign key; the metrics and error columns must match the status |
 
+```
+runs (1 row per run)                      measurements (1 row per attempt)
+┌──────────────────────────┐              ┌──────────────────────────────────┐
+│ run_id            PK     │──1────────N──│ run_id   FK → runs.run_id        │
+│ ammeter, host, port, ... │              │ attempt  PK (run_id, attempt)    │
+│ settings, counts, ...    │              │ slot     UNIQUE (run_id, slot)   │
+└──────────────────────────┘              │ current_a  XOR  error_type/msg   │
+            │                             └──────────────────────────────────┘
+            1
+            │                             run_statistics (1 row per run)
+            │                             ┌──────────────────────────────────┐
+            └───────────────────────1─────│ run_id  PK, FK → runs.run_id     │
+                                          │ status, successful_count, metrics│
+                                          └──────────────────────────────────┘
+```
+
 Numeric columns must hold finite numbers of the right type. Integers must fit SQLite's signed 64-bit `INTEGER` range (−2⁶³ to 2⁶³ − 1); `save_run` rejects any integer field outside it with a field-specific `ValueError` before opening the database (otherwise `sqlite3` would raise `OverflowError`). The cross-table counts (attempt rows, successful rows, statistics count) are checked in Python before saving and again when loading.
 
 **Behaviour.**
@@ -149,7 +169,73 @@ Numeric columns must hold finite numbers of the right type. Integers must fit SQ
 - **Crash during sampling:** a run is kept in memory and saved only when it finishes. If the sampling process crashes or is killed during a run, that run's measurements are lost (there is no incremental checkpointing).
 - **Crash during a save:** each save is a SQLite transaction protected by SQLite's rollback journal (the archive keeps SQLite's default journal and sync settings). If the process stops mid-save, the next connection that can write to the file (the next save) rolls back the partial save, so runs that were already committed are kept and the interrupted run is absent. Until that happens, a read-only `load_run` cannot do the rollback and raises `ArchiveError` (cause `SQLITE_READONLY_ROLLBACK`). This was checked by killing a process during a save. As with any SQLite database, it relies on the storage honouring flushes to disk.
 
-Listing, comparing and exporting archived runs are planned for the next stage.
+### Querying the archive (command line)
+
+`src/archive_cli.py` lists, shows, compares and exports archived runs. Run it from the project root (so that `-m src.archive_cli` is found), with the virtual environment's Python:
+
+```
+python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
+```
+
+| Command | Output |
+|---|---|
+| `list [--ammeter NAME] [--since TIME] [--until TIME] [--limit N]` | A compact table of runs, newest start time first (ties ordered by run ID). |
+| `show RUN_ID` | The complete run (settings, every attempt, statistics) as JSON. |
+| `compare RUN_ID_A RUN_ID_B` | Both runs' device, settings, counts and analysis status, and the five metrics side by side, as JSON. |
+| `export RUN_ID OUTPUT_PATH` | Writes the complete run to a new UTF-8 JSON file. |
+
+**Which database.** `--db` and `--config` are global options and go **before** the command; only one of them can be given.
+- `--db PATH` reads that file; a relative path is resolved against the current working directory. The configuration is not read, so this works whether archiving is enabled, disabled or not configured.
+- Without `--db`, the CLI uses `result_management.database_path` from `--config PATH` (default: the project's `config/config.yaml`), resolved against the project root as described above. This applies even when `archive_enabled` is false. If no path is configured, the command fails and asks for `--db`.
+- No command creates a database, changes one, or starts the emulators. A missing database is reported, not created.
+
+**Options and validation.**
+- `--ammeter` matches the device name exactly and case-sensitively. `%`, `_`, quotes and SQL-like text are ordinary characters; every value is passed to SQLite as a parameter.
+- `--since` (inclusive) and `--until` (exclusive) filter by run start time and need a UTC offset, for example `2026-11-08T17:00:00Z` or `2026-11-08T19:00:00+02:00`; they are converted to UTC before comparison. `--since` must be earlier than `--until`.
+- `--limit` is 1 to 1000 (default 20). There is no paging.
+- Run IDs must be canonical lowercase UUIDs, as shown by `list`; malformed IDs are rejected before the database is opened.
+- `list` reads only the `runs` and `run_statistics` tables. A run without a statistics row is reported as an `ArchiveIntegrityError` rather than silently left out.
+
+**Comparison.** For each metric, the output has both values and `difference_b_minus_a` (run B minus run A) when both exist. Otherwise, or if the difference is too large for a finite float, it has `difference_unavailable` with the reason (for example, `no value for run b (analysis status 'no_data')`). `context_differences` lists the device and settings fields that differ (such as `ammeter` or `settings.measurements_count`). These are context for reading the numbers, not a reason to refuse the comparison. The comparison does not rank devices, judge accuracy, or mark anything as pass or fail. The attempt lists are not repeated; use `show` for them.
+
+**Export.**
+- The JSON is produced before the destination is created, with `allow_nan=False` (strict JSON).
+- The file is created exclusively: an existing file is never overwritten or removed, and the command fails instead.
+- The output directory must already exist.
+- If writing fails (for example, the disk is full), the partly written new file is removed.
+- Export is not atomic: if the process is killed while writing, a partial file can remain.
+
+**Exit codes.**
+- `0`: success.
+- `1`: expected operational failure, such as a missing database or run, an invalid or unsupported archive, an existing export destination, or a configuration problem. The CLI prints one `error: ...` line on stderr.
+- `2`: invalid command-line usage, such as an unknown option, a malformed run ID or timestamp, a limit out of range, or `--since` not earlier than `--until`.
+- Unexpected errors (programming errors) are not caught and show their traceback.
+
+**Examples, Windows PowerShell:**
+
+```powershell
+.\.venv\Scripts\python.exe -m src.archive_cli list
+.\.venv\Scripts\python.exe -m src.archive_cli list --ammeter greenlee --since 2026-11-08T00:00:00Z --limit 5
+.\.venv\Scripts\python.exe -m src.archive_cli show 503ea15b-e9b0-42a6-af17-c36aeb520856
+.\.venv\Scripts\python.exe -m src.archive_cli compare 503ea15b-e9b0-42a6-af17-c36aeb520856 a6a8e389-d288-46bb-843c-270dac01d654
+.\.venv\Scripts\python.exe -m src.archive_cli export 503ea15b-e9b0-42a6-af17-c36aeb520856 .\greenlee_run.json
+.\.venv\Scripts\python.exe -m src.archive_cli --db .\results\ammeter_results.sqlite3 list
+```
+
+**Examples, Linux / macOS:**
+
+```bash
+.venv/bin/python -m src.archive_cli list
+.venv/bin/python -m src.archive_cli list --ammeter greenlee --since 2026-11-08T00:00:00Z --limit 5
+.venv/bin/python -m src.archive_cli show 503ea15b-e9b0-42a6-af17-c36aeb520856
+.venv/bin/python -m src.archive_cli compare 503ea15b-e9b0-42a6-af17-c36aeb520856 a6a8e389-d288-46bb-843c-270dac01d654
+.venv/bin/python -m src.archive_cli export 503ea15b-e9b0-42a6-af17-c36aeb520856 ./greenlee_run.json
+.venv/bin/python -m src.archive_cli --db ./results/ammeter_results.sqlite3 list
+```
+
+The run IDs above are those of the runs in [`sample_results/`](sample_results/README.md). Your own archive has different IDs; copy them from `list`.
+
+The same operations are available in Python: `ResultArchive(path).list_runs(...)`, `load_run(run_id)`, `compare_runs(a, b)` and `export_run(run_id, path)`.
 
 ### Client behaviour
 
@@ -184,7 +270,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-The tests replace the socket, clock, sleep and client with fakes, so they run in about a second and do not start the emulators, open network connections or really sleep.
+The tests replace the socket, clock, sleep and client with fakes, so they run in a few seconds and do not start the emulators, open network connections or really sleep. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
 
 **Dependency change:** the supplied `requirements.txt` listed numpy, scipy, matplotlib, seaborn, pandas and pyyaml, none of which were used by the code. It now lists only PyYAML, following the "minimize external library dependencies" constraint. Libraries will be added back only if a later feature needs them.
 
