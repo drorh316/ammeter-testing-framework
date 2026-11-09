@@ -121,5 +121,5 @@ The suite has 423 pytest tests and runs in a few seconds.
 | Configuration-driven testing | Implemented: devices, sampling limits and archiving come from the validated `config/config.yaml`. |
 | Error simulation | Only in the automated tests, through fakes (connection errors, timeouts, invalid replies). There is no runtime fault-injection mode. |
 | Visualization | Not implemented; prioritized required functionality. |
-| Performance consistency evaluation | Not implemented as a feature. Per-run standard deviation and per-attempt timing are recorded and can be compared, but no consistency score is computed. |
+| Performance consistency evaluation | Implemented as a report on one archived run (`performance` command): failure and skipped-slot rates, start lateness and request duration summaries (including p95), and optional user-defined limits. It measures how consistently the run was carried out, not current variation or accuracy, and it does not diagnose delays. |
 | Accuracy assessment | Not implemented. The emulators produce independent random values with no reference current, so relative accuracy cannot be established from their output. |

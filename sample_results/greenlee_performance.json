@@ -1,0 +1,60 @@
+{
+  "run_id": "503ea15b-e9b0-42a6-af17-c36aeb520856",
+  "ammeter": "greenlee",
+  "started_at_utc": "2026-11-08T17:51:04.636532+00:00",
+  "settings": {
+    "sampling_frequency_hz": 5.0,
+    "measurements_count": 10,
+    "total_duration_seconds": 3.0,
+    "request_timeout_seconds": 1.0
+  },
+  "counts": {
+    "attempted": 10,
+    "succeeded": 10,
+    "failed": 0,
+    "skipped_slots": 0
+  },
+  "rates": {
+    "failure_rate": 0.0,
+    "skipped_slot_rate": 0.0
+  },
+  "start_lateness_s": {
+    "count": 10,
+    "mean_s": 0.00039328997954725663,
+    "median_s": 0.00047044997336340155,
+    "stddev_population_s": 0.00022716608029903958,
+    "p95_s": 0.0006696999538690074,
+    "max_s": 0.0006696999538690074
+  },
+  "request_duration_s": {
+    "count": 10,
+    "mean_s": 0.008031660015694797,
+    "median_s": 0.0006690000300295651,
+    "stddev_population_s": 0.009731865902541713,
+    "p95_s": 0.023864899994805455,
+    "max_s": 0.023864899994805455
+  },
+  "thresholds": {
+    "status": "pass",
+    "checks": [
+      {
+        "name": "max_start_lateness_s",
+        "status": "pass",
+        "observed": 0.0006696999538690074,
+        "limit": 0.005
+      },
+      {
+        "name": "failure_rate",
+        "status": "pass",
+        "observed": 0.0,
+        "limit": 0.0
+      },
+      {
+        "name": "skipped_slot_rate",
+        "status": "pass",
+        "observed": 0.0,
+        "limit": 0.0
+      }
+    ]
+  }
+}
