@@ -2,7 +2,7 @@
 import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import yaml
 
@@ -16,6 +16,7 @@ _SAMPLING_KEYS = {
     "sampling_frequency_hz", "measurements_count", "total_duration_seconds", "request_timeout_seconds",
 }
 _AMMETER_KEYS = {"host", "port", "command"}
+_RESULT_MANAGEMENT_KEYS = {"archive_enabled", "database_path"}
 
 
 class ConfigError(ValueError):
@@ -28,6 +29,14 @@ class AmmeterDevice:
     host: str
     port: int
     command: bytes
+
+
+@dataclass(frozen=True)
+class ArchiveSettings:
+    """Whether run results are archived, and where. ``database_path`` is absolute."""
+
+    enabled: bool
+    database_path: Optional[Path]
 
 
 def load_config(config_path: Union[str, Path, None] = None) -> Dict[str, Any]:
@@ -120,3 +129,33 @@ def parse_ammeters(data: Dict[str, Any]) -> Dict[str, AmmeterDevice]:
 
         devices[name] = AmmeterDevice(name=name, host=host, port=port, command=command_bytes)
     return devices
+
+
+def parse_result_management(data: Dict[str, Any]) -> ArchiveSettings:
+    """Build ArchiveSettings from the ``result_management`` section.
+
+    A missing or empty section disables archiving. A relative ``database_path`` is
+    resolved against the project root, not the current working directory.
+    """
+    section = data.get("result_management")
+    if section is None:
+        return ArchiveSettings(enabled=False, database_path=None)
+    if not isinstance(section, dict):
+        raise ConfigError(f"configuration section result_management must be a mapping, got {section!r}")
+    _reject_unknown_keys("result_management", section, _RESULT_MANAGEMENT_KEYS)
+
+    enabled = section.get("archive_enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"result_management.archive_enabled must be true or false, got {enabled!r}")
+
+    raw_path = section.get("database_path")
+    if raw_path is None:
+        if enabled:
+            raise ConfigError("result_management.database_path is required when archive_enabled is true")
+        return ArchiveSettings(enabled=False, database_path=None)
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ConfigError(f"result_management.database_path must be a non-empty path string, got {raw_path!r}")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return ArchiveSettings(enabled=enabled, database_path=path)

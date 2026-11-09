@@ -19,6 +19,7 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `testing/`
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
+    - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load).
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
     - `config.py`: Loads `config.yaml` and validates the sampling and ammeter sections.
@@ -30,7 +31,9 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
   - `test_analysis.py`: Statistics tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
+  - `test_archive.py`: SQLite archive integration tests on real temporary database files.
   - `fakes.py`: Shared fake clock, sleep and measurement function.
+  - `conftest.py`: Stops any test from writing to the shipped results database.
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
 - `requirements-dev.txt`: Development dependencies (runtime dependencies plus pytest).
@@ -52,7 +55,7 @@ After the [development setup](#development-setup-and-tests) (which installs PyYA
 ```powershell
 .\.venv\Scripts\python.exe -m examples.run_tests
 ```
-(Linux / macOS: `.venv/bin/python -m examples.run_tests`.) It validates `config/config.yaml`, starts the three emulators the same way as `main.py` (including the 5-second startup delay), samples each configured ammeter with `AmmeterTestFramework().run_test(name)`, and prints a summary of each run. The emulators print their own lines while being sampled. The exit code is 0 only if every ammeter had at least one attempt and no attempt failed; a run with no attempts is reported as "NO MEASUREMENTS" with its timing shown as unavailable.
+(Linux / macOS: `.venv/bin/python -m examples.run_tests`.) It validates `config/config.yaml`, starts the three emulators the same way as `main.py` (including the 5-second startup delay), samples each configured ammeter with `AmmeterTestFramework().run_test(name)`, and prints a summary of each run. The emulators print their own lines while being sampled. With archiving enabled (the shipped configuration), each run is saved to `results/ammeter_results.sqlite3` and then reloaded through a new connection and compared with the collected result. The exit code is 0 only if every ammeter had at least one attempt, no attempt failed, the statistics were calculated, and the run was archived and reloaded unchanged. A run with no attempts is reported as "NO MEASUREMENTS" with its timing shown as unavailable; an analysis or archive failure is reported for that run while its collected measurements are still shown.
 
 ### Sampling
 
@@ -61,7 +64,7 @@ After the [development setup](#development-setup-and-tests) (which installs PyYA
 | Setting | Required | Meaning |
 |---|---|---|
 | `sampling_frequency_hz` | yes | Samples per second (from 1/86400 to 1000). |
-| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included (at least 1). |
+| `measurements_count` | one of the two limits | Maximum number of **attempted** requests, failures included (from 1 to 2⁶³ − 1, the signed 64-bit range the archive can store; checked even when the duration is the tighter limit). |
 | `total_duration_seconds` | one of the two limits | Upper bound on the sampling window, in seconds (at most 604800, one week). |
 | `request_timeout_seconds` | no (default 5.0) | Timeout for one request (at most 3600); clipped to the time remaining in the window. |
 
@@ -83,7 +86,7 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 
 **Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
 
-**Result** (a JSON-compatible `dict`): `ammeter`, `host`, `port`, `command`, the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
+**Result** (a JSON-compatible `dict`): `run_id` (a UUID4), `ammeter`, `host`, `port`, `command`, `started_at_utc` and `ended_at_utc` (wall-clock UTC, `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`; durations come from the monotonic `elapsed_s`), the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
 
 ```json
 {"attempt": 2, "slot": 1, "scheduled_offset_s": 0.5, "start_offset_s": 0.5003, "lateness_s": 0.0003,
@@ -99,6 +102,7 @@ Every `run_test` result also has an `analysis` section, computed by `summarize_m
 
 | Key | Meaning |
 |---|---|
+| `status` | `"ok"` (metrics calculated), `"no_data"` (no successful measurements) or `"error"` (see below). |
 | `count` | Number of successful measurements used. |
 | `mean_a` | Arithmetic mean. |
 | `median_a` | Middle value; with an even count, the mean of the two middle values. |
@@ -108,10 +112,44 @@ Every `run_test` result also has an `analysis` section, computed by `summarize_m
 - The **population** standard deviation is used because the metric describes the spread of the measurements collected in this run, not an estimate for a larger population (that would be the sample standard deviation, `statistics.stdev`).
 - With no successful measurements, `count` is 0 and every metric is `null`. With one, the mean, median, minimum and maximum are that value and the standard deviation is 0.0.
 - The metrics are computed with Python's `statistics` module; no other library is used. Zero and negative values are valid, and no acceptance thresholds are applied.
-- Values that are not finite numbers (booleans, text, NaN, infinity) are rejected with `ValueError` rather than skipped. If finite but extreme values would give a statistic that is not a finite float (for example, the median of two values near the largest float), a `ValueError` is raised instead of returning infinity, so results stay strict JSON.
+- Values that are not finite numbers (booleans, text, NaN, infinity) are rejected with `ValueError` rather than skipped; inside `run_test` that would be a programming error and is not caught. If finite but extreme values would give a statistic that is not a finite float (for example, the median of two values near the largest float), `summarize_measurements` raises `AnalysisError` (a `ValueError` subclass) instead of returning infinity. `run_test` catches only `AnalysisError`: it keeps every measurement and count, sets `status` to `"error"`, leaves the metrics `null`, and adds `"error": {"type": ..., "message": ...}`.
 - The five metrics are always computed; the `analysis.statistical_metrics` key in `config.yaml` is an unused placeholder.
 
 A small standard deviation shows that a run's measurements were consistent, not that they were accurate. The three emulators generate independent random values and have no shared reference or known true current, so these statistics cannot show which ammeter is more accurate.
+
+### Result archive (SQLite)
+
+When `result_management.archive_enabled` is true, `run_test` saves every result to a SQLite database using Python's built-in `sqlite3` module (no ORM, no server):
+
+```yaml
+result_management:
+  archive_enabled: true
+  database_path: results/ammeter_results.sqlite3   # relative paths are resolved against the project root
+```
+
+A missing or empty `result_management` section disables archiving. Generated databases and their `-journal`/`-wal`/`-shm` files are ignored by Git.
+
+**Schema (version 1).** Three tables, with the archive identified by SQLite's `application_id` and its version by `user_version`:
+
+| Table | Contents | Key constraints |
+|---|---|---|
+| `runs` | run ID, UTC start/end, device, effective settings, counts, elapsed time, stop reason | `run_id` primary key (NOT NULL); `attempted = succeeded + failed`; at least one stopping limit; valid stop reason, port and timestamp format |
+| `measurements` | one row per attempt: slot, timing, effective timeout, clipped flag, and either `current_a` or the error type and message | foreign key to `runs`; primary key `(run_id, attempt)`; unique `(run_id, slot)`; exactly one of value or error |
+| `run_statistics` | one row per run: analysis status, successful count, the five metrics, or the analysis error | `run_id` primary key and foreign key; the metrics and error columns must match the status |
+
+Numeric columns must hold finite numbers of the right type. Integers must fit SQLite's signed 64-bit `INTEGER` range (−2⁶³ to 2⁶³ − 1); `save_run` rejects any integer field outside it with a field-specific `ValueError` before opening the database (otherwise `sqlite3` would raise `OverflowError`). The cross-table counts (attempt rows, successful rows, statistics count) are checked in Python before saving and again when loading.
+
+**Behaviour.**
+- A run and all its rows are saved in **one transaction**; if any insert fails, the whole save is rolled back, so a run is never partly archived. An existing run ID raises `DuplicateRunError` and the archived run is left unchanged.
+- Every connection enables foreign keys, uses parameterized SQL, and is closed explicitly.
+- Only a new or empty file is initialised. A file that is not a SQLite database, a database created by something else, or an archive missing a required table or column raises `ArchiveFormatError`; another schema version raises `UnsupportedSchemaVersionError`. These checks run in both `save_run` and `load_run` before any run row is read or inserted, and none of these cases changes the file. Tables and columns are checked by name only (column types and constraints are not compared). There is no migration code.
+- `ResultArchive(path).load_run(run_id)` opens the file read-only: it never creates a missing file (`ArchiveNotFoundError`) and returns the same structure as `run_test`. A run whose rows are incomplete or inconsistent raises `ArchiveIntegrityError` instead of being returned.
+- If a completed run cannot be archived, `run_test` raises `ResultArchiveError`; its `result` attribute holds the complete in-memory result, and `__cause__` holds the storage error.
+- **Concurrency:** SQLite allows many readers but only one writer at a time. A save waits up to 5 seconds (`lock_timeout_s`) for the write lock and then raises `ArchiveLockedError`. This suits one test station, not many concurrent writers.
+- **Crash during sampling:** a run is kept in memory and saved only when it finishes. If the sampling process crashes or is killed during a run, that run's measurements are lost (there is no incremental checkpointing).
+- **Crash during a save:** each save is a SQLite transaction protected by SQLite's rollback journal (the archive keeps SQLite's default journal and sync settings). If the process stops mid-save, the next connection that can write to the file (the next save) rolls back the partial save, so runs that were already committed are kept and the interrupted run is absent. Until that happens, a read-only `load_run` cannot do the rollback and raises `ArchiveError` (cause `SQLITE_READONLY_ROLLBACK`). This was checked by killing a process during a save. As with any SQLite database, it relies on the storage honouring flushes to disk.
+
+Listing, comparing and exporting archived runs are planned for the next stage.
 
 ### Client behaviour
 

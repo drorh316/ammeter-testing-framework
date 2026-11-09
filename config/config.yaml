@@ -32,4 +32,9 @@ analysis:
     enabled: true
     plot_types:
 
+# SQLite archive of every run_test() result (runs, measurements, run_statistics tables).
+# A relative database_path is resolved against the project root. Remove this section
+# or set archive_enabled to false to disable archiving.
 result_management:
+  archive_enabled: true
+  database_path: results/ammeter_results.sqlite3

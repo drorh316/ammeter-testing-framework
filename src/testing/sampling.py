@@ -53,6 +53,10 @@ MIN_SAMPLING_FREQUENCY_HZ = 1.0 / 86400  # one sample per day
 MAX_SAMPLING_FREQUENCY_HZ = 1000.0       # each sample is a separate TCP request
 MAX_TOTAL_DURATION_SECONDS = 7 * 86400.0  # one week
 MAX_POTENTIAL_ATTEMPTS = 1_000_000       # attempt records kept in memory per run
+# The largest signed 64-bit integer, which is also SQLite's INTEGER maximum, so every
+# accepted count can be archived. Checked on its own: a short duration that limits the
+# real number of attempts does not make a larger count acceptable.
+MAX_MEASUREMENTS_COUNT = 2**63 - 1
 MAX_REQUEST_TIMEOUT_SECONDS = 3600.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
 
@@ -105,6 +109,10 @@ class SamplingSettings:
                     f"measurements_count must be a whole number or null, got {count!r} ({type(count).__name__})")
             if count < 1:
                 raise ValueError(f"measurements_count must be at least 1, got {count!r}")
+            if count > MAX_MEASUREMENTS_COUNT:
+                raise ValueError(
+                    f"measurements_count must be at most {MAX_MEASUREMENTS_COUNT} "
+                    f"(the largest signed 64-bit integer), got {count!r}")
 
         if self.total_duration_seconds is not None:
             duration = _positive_finite_number(

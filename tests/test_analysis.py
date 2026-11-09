@@ -4,12 +4,12 @@ import math
 
 import pytest
 
-from src.testing.analysis import METRIC_KEYS, summarize_measurements
+from src.testing.analysis import METRIC_KEYS, AnalysisError, failed_analysis, summarize_measurements
 
 
 def test_known_values():
     assert summarize_measurements([2, 4]) == {
-        "count": 2, "mean_a": 3.0, "median_a": 3.0, "stddev_population_a": 1.0, "min_a": 2.0, "max_a": 4.0,
+        "status": "ok", "count": 2, "mean_a": 3.0, "median_a": 3.0, "stddev_population_a": 1.0, "min_a": 2.0, "max_a": 4.0,
     }
 
 
@@ -32,12 +32,12 @@ def test_population_not_sample_standard_deviation():
 
 
 def test_empty_input_has_count_zero_and_no_metrics():
-    assert summarize_measurements([]) == {"count": 0, **{key: None for key in METRIC_KEYS}}
+    assert summarize_measurements([]) == {"status": "no_data", "count": 0, **{key: None for key in METRIC_KEYS}}
 
 
 def test_single_value():
     assert summarize_measurements([0.0147]) == {
-        "count": 1, "mean_a": 0.0147, "median_a": 0.0147, "stddev_population_a": 0.0,
+        "status": "ok", "count": 1, "mean_a": 0.0147, "median_a": 0.0147, "stddev_population_a": 0.0,
         "min_a": 0.0147, "max_a": 0.0147,
     }
 
@@ -84,13 +84,16 @@ def test_all_metrics_are_floats():
     ],
 )
 def test_invalid_values_are_rejected_not_skipped(bad_value, message):
-    with pytest.raises(ValueError, match=f"measurement 1 {message}"):
+    with pytest.raises(ValueError, match=f"measurement 1 {message}") as excinfo:
         summarize_measurements([1.0, bad_value, 2.0])
+
+    # Invalid input is a programming error, not the expected AnalysisError.
+    assert not isinstance(excinfo.value, AnalysisError)
 
 
 def test_unrepresentable_statistic_is_an_error_not_infinity():
     # Both values are finite, but their median, (a + b) / 2 in floating point, overflows.
-    with pytest.raises(ValueError, match="cannot be represented as finite floats: median_a"):
+    with pytest.raises(AnalysisError, match="cannot be represented as finite floats: median_a"):
         summarize_measurements([1.7e308, 1.7e308])
 
 
@@ -109,3 +112,17 @@ def test_accepts_any_iterable():
 @pytest.mark.parametrize("values", [[], [1.5], [2, 4], [-1.0, 0.0, 1.0]])
 def test_result_is_strict_json(values):
     json.dumps(summarize_measurements(values), allow_nan=False)
+
+
+def test_failed_analysis_keeps_the_count_and_reports_the_error():
+    error = AnalysisError("median_a overflowed")
+
+    assert failed_analysis(2, error) == {
+        "status": "error", "count": 2, **{key: None for key in METRIC_KEYS},
+        "error": {"type": "AnalysisError", "message": "median_a overflowed"},
+    }
+    json.dumps(failed_analysis(2, error), allow_nan=False)
+
+
+def test_analysis_error_is_a_value_error_for_existing_callers():
+    assert issubclass(AnalysisError, ValueError)
