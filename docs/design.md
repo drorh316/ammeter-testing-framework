@@ -120,6 +120,6 @@ The pytest suite runs in a few seconds; `python -m pytest` and the CI job logs s
 |---|---|
 | Configuration-driven testing | Implemented: devices, sampling limits and archiving come from the validated `config/config.yaml`. |
 | Error simulation | Only in the automated tests, through fakes (connection errors, timeouts, invalid replies). There is no runtime fault-injection mode. |
-| Visualization | Not implemented; prioritized required functionality. |
+| Visualization | Implemented as a self-contained HTML report for one archived run (`plot` command): inline SVG scatter charts of current, start lateness and request duration against the actual start time, and a histogram of the successful readings. Failed attempts are marked separately and never shown as 0 A. Large runs are downsampled to at most 2000 points per chart, with a note. Standard library only; no cross-run dashboard. |
 | Performance consistency evaluation | Implemented as a report on one archived run (`performance` command): failure and skipped-slot rates, start lateness and request duration summaries (including p95), and optional user-defined limits. It measures how consistently the run was carried out, not current variation or accuracy, and it does not diagnose delays. |
 | Accuracy assessment | Not implemented. The emulators produce independent random values with no reference current, so relative accuracy cannot be established from their output. |

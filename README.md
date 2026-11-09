@@ -53,6 +53,7 @@ python -m venv .venv
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
     - `performance.py`: `build_performance_report`: timing and failure consistency of one run, with optional user-defined limits.
+    - `visualization.py`: `render_run_report`: self-contained HTML report with SVG charts for one run.
     - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load, list, compare, export).
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
@@ -65,6 +66,7 @@ python -m venv .venv
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
   - `test_analysis.py`: Statistics tests.
   - `test_performance.py`: Performance report and `performance` command tests.
+  - `test_visualization.py`: HTML/SVG report and `plot` command tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
   - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
@@ -221,6 +223,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 | `compare RUN_ID_A RUN_ID_B` | Both runs' device, settings, counts and analysis status, and the five metrics side by side, as JSON. |
 | `export RUN_ID OUTPUT_PATH` | Writes the complete run to a new UTF-8 JSON file. |
 | `performance RUN_ID [--max-start-lateness SECONDS] [--max-failure-rate RATE] [--max-skipped-slot-rate RATE]` | The run's [performance consistency report](#performance-consistency-report) as JSON, with optional limits. |
+| `plot RUN_ID OUTPUT_PATH [limits]` | Writes a self-contained [HTML report with charts](#html-run-report-with-charts) to a new file. |
 
 **Which database.** `--db` and `--config` are global options and go **before** the command; only one of them can be given.
 - `--db PATH` reads that file; a relative path is resolved against the current working directory. The configuration is not read, so this works whether archiving is enabled, disabled or not configured.
@@ -316,6 +319,46 @@ It does **not** describe the measured current: the spread of the current values 
 
 Example: [`sample_results/greenlee_performance.json`](sample_results/README.md#performance-report).
 
+### HTML run report with charts
+
+`python -m src.archive_cli plot RUN_ID OUTPUT_PATH` (or `render_run_report(run, limits)` in `src/testing/visualization.py`) writes one archived run as a **self-contained HTML file**.
+- The charts are inline SVG. There is no JavaScript, no external stylesheet, font or CDN, and no new dependency, so the file opens offline in any browser.
+- The command never opens a browser itself.
+- The same optional `--max-start-lateness`, `--max-failure-rate` and `--max-skipped-slot-rate` limits as `performance` can be given. They are shown in the report ("Thresholds: not evaluated" when none are given) but do not change the exit code.
+
+**Contents.**
+- **Header:** run details (ID, device, address, command, UTC start and end, settings, counts, stop reason).
+- **Current statistics** in amperes, from the run's `analysis`.
+- **Performance summary** from `build_performance_report`, with timings in milliseconds.
+- **Four charts.**
+- **Table of failed attempts:** at most 100 rows; the report says when more exist.
+
+A note at the top states that the values are random emulator readings and do not establish the accuracy of any device.
+
+| Chart | x axis | y axis | Notes |
+|---|---|---|---|
+| Current vs. actual start offset | actual start (s) | current (A) | Successful readings as circles. Failed attempts have no current value, so they are red crosses in a separate "failed" strip below the plot area, never at 0 A. |
+| Start lateness | actual start (s) | lateness (ms) | Every attempt; failed attempts as red crosses. |
+| Request duration | actual start (s) | duration (ms) | Every attempt; failed attempts as red crosses (a timeout shows its full duration). |
+| Histogram | current (A) | readings per bin | All successful readings of the run. |
+
+- **Axes:** the three time-based charts share the same x axis, so they line up vertically. Each chart has axis titles with units, tick labels and a legend. Tick labels use the fewest significant digits (at least 3) that keep them distinct; only the labels are rounded, not the data.
+- **Scatter only:** points are never connected, so no line crosses a failed attempt or a skipped slot.
+- **Value axes are never clipped:** negative currents get a negative axis. A single value, or identical values, get a small range around the value.
+- **Edge cases:**
+  - A run with no attempts, or with no successful readings, shows a message in the empty chart.
+  - A failed analysis is shown with its error, and the readings are still plotted.
+- **Histogram bins:** Sturges' rule, `ceil(log2(n)) + 1` equal-width bins between the smallest and largest reading (at most 50). Each bin includes its left edge; the last bin also includes the maximum. Identical readings, including a single reading, give one bin.
+- **Large runs:** the three point charts draw at most **2000 attempts** each.
+  - Above that, they show an evenly spaced subset. Every failed attempt is kept if failures fit in half of the 2000-point cap; otherwise evenly spaced failures fill that half, and successful attempts fill the rest.
+  - A "Downsampled charts" note gives the exact numbers shown.
+  - The statistics, the performance summary and the histogram always use the full run.
+- **Escaping:** all text taken from the run (device name, command, error messages, …) is HTML-escaped.
+- **Writing the file:** the document is generated before the file is created. Writing then behaves exactly like `export` (shared code): a new file only, never overwritten, the directory must exist, and a partial file is removed if writing fails (or the error says it could not be).
+- **Exit codes:** 0 when written; 1 for an operational failure (missing database or run, existing file, write failure); 2 for invalid usage.
+
+Example: [`sample_results/greenlee_report.html`](sample_results/README.md#html-report).
+
 ### Client behaviour
 
 `request_current_from_ammeter(port, command, timeout=5.0, host="127.0.0.1", max_response_bytes=1024)` in `Ammeters/client.py`:
@@ -393,7 +436,8 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
   - `list` has no paging (at most 1000 runs).
 - **Export** is not atomic: a process killed while writing can leave a partial file.
 - **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
-- **Not implemented** (optional bonuses): visualization, runtime error simulation, and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
+- **Charts:** one run per HTML report (no cross-run dashboard). Markers are not clipped at the edge of the plot area, and the point charts draw at most 2000 attempts (larger runs are downsampled, with a note).
+- **Not implemented** (optional bonuses): runtime error simulation and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
 - **Platforms:** tested only on the environments listed under [Tested platforms](#ammeter-emulators) (Windows Server 2025, Ubuntu 26.04 and macOS 26 runners with Python 3.11, and Windows 10 locally). On the macOS runner, requests started up to 85 ms after their target time.
 
 ## Fixes to the Supplied Code
