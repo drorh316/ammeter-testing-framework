@@ -95,6 +95,7 @@ The suite has 413 pytest tests and runs in a few seconds.
 - **CLI tests** call `main()` in-process, and one test runs the module as a separate process.
 - **A guard** (`tests/conftest.py`) fails any test that would open or write the shipped `results/` database.
 - **End-to-end:** `main.py` and the sampling demo run against the real emulators. The demo saves each run, reloads it through a new connection and checks that it is unchanged.
+- **Cross-platform CI:** a GitHub Actions workflow (`.github/workflows/ci.yml`) runs the test suite, `main.py`, the demo and a separate-process check of the archive on Windows, Ubuntu and macOS. Its first run found two problems in the supplied emulators that do not show up in an interactive Windows console: a `UnicodeEncodeError` when output is redirected on Windows, and failure to re-bind the ports during TIME_WAIT on Linux and macOS. Both are fixed (README Fixes 5 and 6).
 
 ## Key tradeoffs and limitations
 
@@ -104,7 +105,7 @@ The suite has 413 pytest tests and runs in a few seconds.
   - The emulators generate independent random values with no known true current, so the statistics describe spread within a run, not accuracy.
   - The comparison shows signed differences only, without ranking devices or labelling results as pass or fail.
   - The emulators listen on IPv4 only (an IPv4 socket bound to `localhost`).
-  - The demo waits a fixed 5 s for them to start, like `main.py`.
+  - The demo waits a fixed 5 s for them to start, like `main.py`. Both then check that every emulator thread is still alive. This catches a startup crash, such as a port in use, but does not prove that a server is ready.
 - **Numeric IPv4 addresses only (client policy).** Separately from what the emulators support, the client deliberately accepts only numeric IPv4 addresses, such as `127.0.0.1`. This avoids hostname resolution and connection attempts to several resolved addresses, so one connection attempt shares a single timeout budget with sending and receiving. Supporting hostnames or IPv6 would need resolution and a policy for dividing the budget between several addresses.
 - **Bounded runs.** At most 1,000,000 potential attempts per run, because every attempt record is kept in memory, and `measurements_count` must fit a signed 64-bit integer so it can be archived.
 - **Platforms.** Development and validation were done on Windows 10 with Python 3.11.3. The code uses only portable standard-library features plus PyYAML, and the README gives Linux/macOS commands, but those were not run on Linux or macOS.

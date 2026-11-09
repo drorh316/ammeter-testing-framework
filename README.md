@@ -77,7 +77,7 @@ From the project root, start the ammeter emulators and request one current measu
 python main.py
 ```
 
-`main.py` starts the three emulators in background threads, waits 5 seconds for them to start listening, then sends one request to each port and prints the measurement each one returns. If any request fails, it prints the error and exits with code 1.
+`main.py` starts the three emulators in background threads and waits 5 seconds for them to start listening. It then sends one request to each port and prints the measurement each one returns. If an emulator thread has already stopped after the wait (for example, its port was in use), `main.py` names it and exits with code 1 without sending requests; if any request fails, it prints the error and exits with code 1. The thread check only detects an emulator that crashed: a running thread does not prove the server is ready, so a request can still fail. The sampling demo uses the same startup helper and check.
 
 `main.py` and the client use only the Python standard library; nothing needs to be installed to run it.
 
@@ -366,4 +366,19 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 ### 4. The test framework, configuration and example were unusable
 
 - **Problem**: `src/testing/test_framework.py` failed on import (`Dict` was not imported) and `run_test` was empty. `config/config.yaml` had the sampling values set to `NULL`, and its ammeter entries were commented out with the wrong ports (5000–5002) and the CIRCUTOR command without `-current`. `load_config` opened a path relative to the current working directory. `examples/run_tests.py` called `run_test()` without the required ammeter type.
-- **Fix**: Implemented sampling (see [Sampling](#sampling)) behind the existing `run_test(ammeter_type)` interface, with validated configuration that matches the working emulators and a default configuration path independent of the working directory. Replaced the example with a working [sampling demo](#sampling-demo). `main.py` and the emulators are unchanged.
+- **Fix**: Implemented sampling (see [Sampling](#sampling)) behind the existing `run_test(ammeter_type)` interface, with validated configuration that matches the working emulators and a default configuration path independent of the working directory. Replaced the example with a working [sampling demo](#sampling-demo). `main.py` and the emulators were unchanged by this fix.
+
+### 5. The Greenlee emulator crashed when its output was redirected on Windows
+
+- **Problem**: `GreenleeAmmeter.measure_current` printed the ohm sign (`Ω`). With stdout redirected to a file or pipe on Windows, Python writes it in the locale encoding, and on the CI Windows runner and the development machine that was cp1252, which has no ohm sign. The print raised `UnicodeEncodeError` inside the emulator thread, so the thread ended. The request got an empty response and every later Greenlee request was refused. Found by running `main.py > log.txt` locally, and confirmed by the first Windows CI run.
+- **Fix**: The diagnostic line now prints `ohm` instead of `Ω`. The measured value, the command and the reply are unchanged. A test calls each emulator's `measure_current` with a strict cp1252 stdout.
+
+### 6. The emulators could not be restarted immediately on Linux and macOS
+
+- **Problem**: Each emulator closes the connection first after replying, so the closed connections stay in TCP TIME_WAIT on the emulator's port. On Linux and macOS, binding a new listener to that port fails during TIME_WAIT unless `SO_REUSEADDR` is set. In the first CI run, the sampling demo started right after `main.py` and all three emulators failed with `OSError: [Errno 98] Address already in use` (Ubuntu) and `[Errno 48]` (macOS). Every request was refused. Windows allowed the immediate re-bind.
+- **Fix**: `start_server` sets `SO_REUSEADDR` before `bind` on POSIX systems only. On Windows it is left unset, because there it would let a second socket bind a port that is in active use. A second listener on a port that is actively listening is still refused on all three systems. A unit test checks that the option is set before `bind` only where enabled, and the CI workflow runs the demo immediately after `main.py`.
+
+### 7. Emulator startup failures were only detected indirectly
+
+- **Problem**: `main.py` started the emulator threads and waited 5 seconds without checking them. If an emulator failed to start (for example, its port was in use), its traceback was printed but the script went on. The failure only showed up later as refused requests, or not at all if another program on that port answered.
+- **Fix**: A shared helper in `main.py` (`start_emulators` and `stopped_emulators`), also used by the sampling demo, starts the threads, waits the same 5 seconds and then checks that every emulator thread is still alive. If one has stopped, the script names it and exits with code 1 before sending any request. This detects startup crashes only; it does not show that a server is ready to accept connections. Tests cover a real emulator whose port is already in use, and both scripts' early exit.

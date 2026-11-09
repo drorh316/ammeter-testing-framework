@@ -55,3 +55,6 @@ results/
 
 # --- Original assignment documents (kept locally, not published) ---
 Exam/
+
+# CI test reports
+test-reports/
