@@ -1,9 +1,17 @@
+import os
 import socket
 import time
 import random
 from abc import ABC, abstractmethod
 
 NotImplementedErrorMsg = "Subclasses must implement this property."
+
+# The emulator closes each connection first, so the closed connections stay in TIME_WAIT
+# on the emulator's port for a while. On Linux and macOS a new listener cannot bind that
+# port during TIME_WAIT unless SO_REUSEADDR is set (seen in CI as "Address already in use"
+# when the demo ran right after main.py). It is not set on Windows, which allows the
+# re-bind anyway and where SO_REUSEADDR would let a second socket bind a port in active use.
+REUSE_ADDRESS = os.name == "posix"
 
 class AmmeterEmulatorBase(ABC):
     def __init__(self, port: int):
@@ -16,6 +24,8 @@ class AmmeterEmulatorBase(ABC):
         The server will run indefinitely, handling one client request at a time.
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if REUSE_ADDRESS:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('localhost', self.port))
             s.listen()
             print(f"{self.__class__.__name__} is running on port {self.port}")

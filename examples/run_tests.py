@@ -4,8 +4,9 @@ Run from the project root:
 
     python -m examples.run_tests
 
-It validates config/config.yaml, starts the three emulators with the same functions and
-fixed startup delay as main.py, runs AmmeterTestFramework.run_test() for each configured
+It validates config/config.yaml, starts the three emulators with the same helper and
+fixed startup delay as main.py (exiting with status 1 if an emulator thread has already
+stopped, for example because its port is in use), runs AmmeterTestFramework.run_test() for each configured
 ammeter, and prints a summary per run. The emulators print their own lines while sampling.
 If archiving is enabled, each run is reloaded from the archive through a new connection
 and compared with the in-memory result.
@@ -15,15 +16,11 @@ statistics were calculated, and (when archiving is enabled) the run was archived
 reloaded unchanged. Collected results are still shown when a later step fails.
 """
 import sys
-import threading
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from main import run_circutor_emulator, run_entes_emulator, run_greenlee_emulator
+from main import start_emulators, stopped_emulators
 from src.testing.archive import ArchiveError, ResultArchive, ResultArchiveError
 from src.testing.test_framework import AmmeterTestFramework
-
-STARTUP_DELAY_SECONDS = 5  # same fixed delay as main.py
 
 
 def _amperes(value) -> str:
@@ -99,9 +96,11 @@ def main() -> int:
     # Load and validate the configuration before starting anything.
     framework = AmmeterTestFramework()
 
-    for start_emulator in (run_greenlee_emulator, run_entes_emulator, run_circutor_emulator):
-        threading.Thread(target=start_emulator, daemon=True).start()
-    time.sleep(STARTUP_DELAY_SECONDS)
+    # Same emulators and fixed startup delay as main.py. Liveness only detects a crash.
+    stopped = stopped_emulators(start_emulators())
+    if stopped:
+        print(f"emulator(s) failed to start: {', '.join(stopped)} (see the traceback above)", file=sys.stderr)
+        return 1
 
     results: Dict[str, Dict[str, Any]] = {}
     storage_errors: Dict[str, Optional[str]] = {}

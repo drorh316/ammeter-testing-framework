@@ -2,6 +2,38 @@
 
 This project provides emulators for different types of ammeters: Greenlee, ENTES, and CIRCUTOR. Each ammeter emulator runs on a separate thread and can respond to current measurement requests.
 
+On top of the emulators it adds a testing framework:
+- one client call for all three ammeter types;
+- configurable sampling by count, duration and frequency;
+- statistics for each run (mean, median, standard deviation, minimum, maximum);
+- a SQLite archive of runs, with a command-line tool to list, show, compare and export them.
+
+**Requirements**
+- **Python 3.11.** The code needs at least 3.11, because it uses 3.11 features such as exception notes and `sqlite3` error names. Only Python 3.11 has been tested (see below); later versions have not been tested.
+- **PyYAML** is the only third-party runtime dependency, and **pytest** is used for the tests (see [Development Setup and Tests](#development-setup-and-tests)). `main.py` itself needs only the standard library.
+- **Tested platforms:** the full test suite, `main.py`, the sampling demo and a separate-process check of the archive pass on:
+  - GitHub Actions `windows-latest`: Windows Server 2025 (10.0.26100), Python 3.11.9;
+  - GitHub Actions `ubuntu-latest`: Ubuntu 26.04.1 LTS, Python 3.11.18;
+  - GitHub Actions `macos-latest`: macOS 26.7.2 on Apple silicon (arm64), Python 3.11.9;
+  - locally: Windows 10 (build 19045), Python 3.11.3.
+
+  The CI runs use the workflow in `.github/workflows/ci.yml` ([passing run](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42576548988)). Other operating system versions, architectures and Python versions have not been tested.
+
+**Quick start** (Windows PowerShell, from the project root; Linux/macOS equivalents are in each section):
+```powershell
+python main.py                                         # one measurement from each emulator
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest                     # automated tests
+.\.venv\Scripts\python.exe -m examples.run_tests         # sample every ammeter and archive the runs
+.\.venv\Scripts\python.exe -m src.archive_cli list       # query the archive
+```
+
+**Further documentation**
+- [docs/design.md](docs/design.md): design decisions, data flow, storage, error handling, testing strategy, tradeoffs and the status of the bonus challenges.
+- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type.
+- [Known limitations](#known-limitations) and [Fixes to the Supplied Code](#fixes-to-the-supplied-code).
+
 ## Project Structure
 
 - `main.py`: Main script (project root) to start the ammeter emulators and request current measurements.
@@ -32,11 +64,14 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
   - `test_analysis.py`: Statistics tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
+  - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
   - `test_archive_queries.py`: Listing, filtering, comparison and export tests (real temporary archives).
   - `test_archive_cli.py`: Command-line interface tests, including exit codes.
   - `fakes.py`: Shared fake clock, sleep and measurement function.
   - `conftest.py`: Stops any test from writing to the shipped results database.
+- `docs/`
+  - `design.md`: Design decisions (see above).
 - `sample_results/`: Three runs exported from the demo archive, one per ammeter type (see its README).
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
@@ -49,7 +84,7 @@ From the project root, start the ammeter emulators and request one current measu
 python main.py
 ```
 
-`main.py` starts the three emulators in background threads, waits 5 seconds for them to start listening, then sends one request to each port and prints the measurement each one returns. If any request fails, it prints the error and exits with code 1.
+`main.py` starts the three emulators in background threads and waits 5 seconds for them to start listening. It then sends one request to each port and prints the measurement each one returns. If an emulator thread has already stopped after the wait (for example, its port was in use), `main.py` names it and exits with code 1 without sending requests; if any request fails, it prints the error and exits with code 1. The thread check only detects an emulator that crashed: a running thread does not prove the server is ready, so a request can still fail. The sampling demo uses the same startup helper and check.
 
 `main.py` and the client use only the Python standard library; nothing needs to be installed to run it.
 
@@ -88,7 +123,7 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 - `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end). A valid run can also end with zero attempts if it is delayed past the end of the window before the first request.
 - The window is [0, D): with the first sample at 0, the targets are those below D. For example, D = 1.2 s at 2 Hz gives targets 0, 0.5 and 1.0 s (three attempts, not 2.4); D = 1.0 s gives 0 and 0.5 s.
 
-**Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
+**Timing precision** depends on the operating system and its load; it is not guaranteed. In the passing CI run (10 attempts per ammeter at 5 Hz, no failed attempts and no skipped slots on any system), the start of each request was at most 0.6 ms late on the Windows runner and 0.14 ms on the Ubuntu runner, but up to 85 ms late on the macOS runner (median 56 ms). These measurements come from shared virtual machines and show that correct results do not imply precise timing. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
 
 **Result** (a JSON-compatible `dict`): `run_id` (a UUID4), `ammeter`, `host`, `port`, `command`, `started_at_utc` and `ended_at_utc` (wall-clock UTC, `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`; durations come from the monotonic `elapsed_s`), the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
 
@@ -209,7 +244,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 - `0`: success.
 - `1`: expected operational failure, such as a missing database or run, an invalid or unsupported archive, an existing export destination, or a configuration problem. The CLI prints one `error: ...` line on stderr.
 - `2`: invalid command-line usage, such as an unknown option, a malformed run ID or timestamp, a limit out of range, or `--since` not earlier than `--until`.
-- Unexpected errors (programming errors) are not caught and show their traceback.
+- Unexpected exceptions are not caught; they propagate and show their traceback.
 
 **Examples, Windows PowerShell:**
 
@@ -244,7 +279,7 @@ The same operations are available in Python: `ResultArchive(path).list_runs(...)
 - Returns the measured current as a `float`.
 - Reads until the emulator closes the connection (which the emulators do after replying), so a response split across several TCP reads is reassembled.
 - `timeout` (seconds, must be positive and finite) is **one shared budget** for the whole network exchange: connecting, sending the command, and receiving the complete response. One deadline is set before connecting; each blocking operation (`connect`, `sendall`, every `recv`) is given only the time left, and a response whose end arrives after the deadline is rejected. The total can still overrun slightly because of normal operating-system scheduling; it is not a hard real-time guarantee.
-- `host` must be a **numeric IPv4 address** (default `127.0.0.1`, where the emulators listen). Hostnames such as `localhost`, IPv6 addresses and DNS resolution are not supported; an unsupported value raises `ValueError` before any network activity.
+- `host` must be a **numeric IPv4 address** (default `127.0.0.1`). This is a deliberate client policy, separate from what the emulators support (they listen on IPv4 `localhost`). A numeric address needs no hostname resolution and gives exactly one address to connect to, so connecting, sending and receiving can share one timeout budget without trying several resolved addresses. Hostnames such as `localhost` and IPv6 addresses are therefore not accepted; an unsupported value raises `ValueError` before any network activity.
 - Raises an `AmmeterCommunicationError` subclass that names the port, with the original exception kept as `__cause__`:
   - `AmmeterConnectionError`: the connection was refused, reset, or otherwise failed.
   - `AmmeterTimeoutError`: connecting, sending and receiving did not all finish within the timeout budget.
@@ -270,7 +305,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-The tests replace the socket, clock, sleep and client with fakes, so they run in a few seconds and do not start the emulators, open network connections or really sleep. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
+Most unit tests replace the socket, clock, sleep and client with fakes, so the suite runs in a few seconds without starting the emulators on their ports, sending network requests or really sleeping. The emulator tests in `tests/test_emulators.py` are the exception: they start short-lived threads. One of them, the startup regression test, uses a real loopback socket on a temporary port chosen by the operating system (not 5001–5003) to check that an emulator whose port is in use is reported as stopped. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
 
 **Dependency change:** the supplied `requirements.txt` listed numpy, scipy, matplotlib, seaborn, pandas and pyyaml, none of which were used by the code. It now lists only PyYAML, following the "minimize external library dependencies" constraint. Libraries will be added back only if a later feature needs them.
 
@@ -299,6 +334,24 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **Measurement Logic**: Calculates current using voltage values (0.1V - 1.0V) over a number of samples and a random time step (0.001s - 0.01s).
 - **Measurement method** : Rogowski Coil Integration: I = ∫V dt
 
+## Known Limitations
+
+- **Timing:** timing is best-effort and depends on the operating system and its load; it is not a real-time guarantee. Each attempt records its scheduled and actual start. Missed slots are skipped, not caught up. The client's request deadline uses `time.monotonic`, which advanced in 15.625 ms steps on the development Windows machine.
+- **Connections:** each sample is a separate TCP connection, and a response ends when the emulator closes the connection. The emulators listen on IPv4 only. Separately, the client accepts only numeric IPv4 addresses, by design: this avoids hostname resolution and attempts to several addresses within one timeout budget (see [Client behaviour](#client-behaviour)).
+- **Emulator startup:** `main.py` and the demo wait a fixed 5 seconds for the emulators to start, and the emulators print their own output while being sampled.
+- **No accuracy assessment:** the emulators return independent random values with no known true current, so the statistics describe consistency within a run, not accuracy. The comparison does not rank devices.
+- **Run size:** at most 1,000,000 potential attempts per run, because all attempt records are kept in memory.
+- **Archive:**
+  - One writer at a time.
+  - No incremental checkpoints: a crash during sampling loses that run.
+  - No schema migrations; tables and columns are checked by name only.
+  - `compare` loads its two runs in separate snapshots.
+  - `list` has no paging (at most 1000 runs).
+- **Export** is not atomic: a process killed while writing can leave a partial file.
+- **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
+- **Not implemented** (optional bonuses): visualization, runtime error simulation, and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
+- **Platforms:** tested only on the environments listed under [Tested platforms](#ammeter-emulators) (Windows Server 2025, Ubuntu 26.04 and macOS 26 runners with Python 3.11, and Windows 10 locally). On the macOS runner, requests started up to 85 ms after their target time.
+
 ## Fixes to the Supplied Code
 
 ### 1. `main.py` did not retrieve any measurements
@@ -320,4 +373,19 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 ### 4. The test framework, configuration and example were unusable
 
 - **Problem**: `src/testing/test_framework.py` failed on import (`Dict` was not imported) and `run_test` was empty. `config/config.yaml` had the sampling values set to `NULL`, and its ammeter entries were commented out with the wrong ports (5000–5002) and the CIRCUTOR command without `-current`. `load_config` opened a path relative to the current working directory. `examples/run_tests.py` called `run_test()` without the required ammeter type.
-- **Fix**: Implemented sampling (see [Sampling](#sampling)) behind the existing `run_test(ammeter_type)` interface, with validated configuration that matches the working emulators and a default configuration path independent of the working directory. Replaced the example with a working [sampling demo](#sampling-demo). `main.py` and the emulators are unchanged.
+- **Fix**: Implemented sampling (see [Sampling](#sampling)) behind the existing `run_test(ammeter_type)` interface, with validated configuration that matches the working emulators and a default configuration path independent of the working directory. Replaced the example with a working [sampling demo](#sampling-demo). `main.py` and the emulators were unchanged by this fix.
+
+### 5. The Greenlee emulator crashed when its output was redirected on Windows
+
+- **Problem**: `GreenleeAmmeter.measure_current` printed the ohm sign (`Ω`). With stdout redirected to a file or pipe on Windows, Python writes it in the locale encoding, and on the CI Windows runner and the development machine that was cp1252, which has no ohm sign. The print raised `UnicodeEncodeError` inside the emulator thread, so the thread ended. The request got an empty response and every later Greenlee request was refused. Found by running `main.py > log.txt` locally, and confirmed by the first Windows CI run.
+- **Fix**: The diagnostic line now prints `ohm` instead of `Ω`. The measured value, the command and the reply are unchanged. A test calls each emulator's `measure_current` with a strict cp1252 stdout.
+
+### 6. The emulators could not be restarted immediately on Linux and macOS
+
+- **Problem**: Each emulator closes the connection first after replying, so the closed connections stay in TCP TIME_WAIT on the emulator's port. On Linux and macOS, binding a new listener to that port fails during TIME_WAIT unless `SO_REUSEADDR` is set. In the first CI run, the sampling demo started right after `main.py` and all three emulators failed with `OSError: [Errno 98] Address already in use` (Ubuntu) and `[Errno 48]` (macOS). Every request was refused. Windows allowed the immediate re-bind.
+- **Fix**: `start_server` sets `SO_REUSEADDR` before `bind` on POSIX systems only. On Windows it is left unset, because there it would let a second socket bind a port that is in active use. A second listener on a port that is actively listening is still refused on all three systems. A unit test checks that the option is set before `bind` only where enabled, and the CI workflow runs the demo immediately after `main.py`.
+
+### 7. Emulator startup failures were only detected indirectly
+
+- **Problem**: `main.py` started the emulator threads and waited 5 seconds without checking them. If an emulator failed to start (for example, its port was in use), its traceback was printed but the script went on. The failure only showed up later as refused requests, or not at all if another program on that port answered.
+- **Fix**: A shared helper in `main.py` (`start_emulators` and `stopped_emulators`), also used by the sampling demo, starts the threads, waits the same 5 seconds and then checks that every emulator thread is still alive. If one has stopped, the script names it and exits with code 1 before sending any request. This detects startup crashes only; it does not show that a server is ready to accept connections. Tests cover a real emulator whose port is already in use, and both scripts' early exit.
