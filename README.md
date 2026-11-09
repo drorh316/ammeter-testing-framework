@@ -9,9 +9,15 @@ On top of the emulators it adds a testing framework:
 - a SQLite archive of runs, with a command-line tool to list, show, compare and export them.
 
 **Requirements**
-- **Python 3.11 or newer.** The code uses 3.11 features such as exception notes and `sqlite3` error names. It was developed and tested with Python 3.11.3 on Windows 10.
+- **Python 3.11.** The code needs at least 3.11, because it uses 3.11 features such as exception notes and `sqlite3` error names. Only Python 3.11 has been tested (see below); later versions have not been tested.
 - **PyYAML** is the only third-party runtime dependency, and **pytest** is used for the tests (see [Development Setup and Tests](#development-setup-and-tests)). `main.py` itself needs only the standard library.
-- **Platforms:** the code uses only portable standard-library features. Linux/macOS commands are given below but have not been run on those systems.
+- **Tested platforms:** the full test suite, `main.py`, the sampling demo and a separate-process check of the archive pass on:
+  - GitHub Actions `windows-latest`: Windows Server 2025 (10.0.26100), Python 3.11.9;
+  - GitHub Actions `ubuntu-latest`: Ubuntu 26.04.1 LTS, Python 3.11.18;
+  - GitHub Actions `macos-latest`: macOS 26.7.2 on Apple silicon (arm64), Python 3.11.9;
+  - locally: Windows 10 (build 19045), Python 3.11.3.
+
+  The CI runs use the workflow in `.github/workflows/ci.yml` ([passing run](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42576548988)). Other operating system versions, architectures and Python versions have not been tested.
 
 **Quick start** (Windows PowerShell, from the project root; Linux/macOS equivalents are in each section):
 ```powershell
@@ -116,7 +122,7 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 - `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end). A valid run can also end with zero attempts if it is delayed past the end of the window before the first request.
 - The window is [0, D): with the first sample at 0, the targets are those below D. For example, D = 1.2 s at 2 Hz gives targets 0, 0.5 and 1.0 s (three attempts, not 2.4); D = 1.0 s gives 0 and 0.5 s.
 
-**Timing precision** depends on the operating system and its load; it is not guaranteed. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
+**Timing precision** depends on the operating system and its load; it is not guaranteed. In the passing CI run (10 attempts per ammeter at 5 Hz, no failed attempts and no skipped slots on any system), the start of each request was at most 0.6 ms late on the Windows runner and 0.14 ms on the Ubuntu runner, but up to 85 ms late on the macOS runner (median 56 ms). These measurements come from shared virtual machines and show that correct results do not imply precise timing. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
 
 **Result** (a JSON-compatible `dict`): `run_id` (a UUID4), `ammeter`, `host`, `port`, `command`, `started_at_utc` and `ended_at_utc` (wall-clock UTC, `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`; durations come from the monotonic `elapsed_s`), the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
 
@@ -343,7 +349,7 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **Export** is not atomic: a process killed while writing can leave a partial file.
 - **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
 - **Not implemented** (optional bonuses): visualization, runtime error simulation, and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
-- **Platforms:** validated only on Windows 10 with Python 3.11.3.
+- **Platforms:** tested only on the environments listed under [Tested platforms](#ammeter-emulators) (Windows Server 2025, Ubuntu 26.04 and macOS 26 runners with Python 3.11, and Windows 10 locally). On the macOS runner, requests started up to 85 ms after their target time.
 
 ## Fixes to the Supplied Code
 

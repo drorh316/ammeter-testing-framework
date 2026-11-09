@@ -99,7 +99,7 @@ The suite has 413 pytest tests and runs in a few seconds.
 
 ## Key tradeoffs and limitations
 
-- **Timing is best-effort.** The scheduler uses `time.perf_counter`, computes every target from the start time so lateness does not accumulate, and skips missed slots instead of catching up. Each attempt records its scheduled and actual start, so timing can be checked afterwards, but precision depends on the operating system and is not guaranteed. In the demo runs on the development Windows machine, start lateness was at most about 1.1 ms. The client's own timeout deadline uses `time.monotonic`.
+- **Timing is best-effort.** The scheduler uses `time.perf_counter`, computes every target from the start time so lateness does not accumulate, and skips missed slots instead of catching up. Each attempt records its scheduled and actual start, so timing can be checked afterwards, but precision depends on the operating system and is not guaranteed. Observed start lateness in demo runs: at most about 1.1 ms on the development Windows machine; in CI, at most 0.6 ms (Windows runner), 0.14 ms (Ubuntu runner) and 85 ms (macOS runner, median 56 ms), with no failed attempts or skipped slots. Passing CI shows the framework works on these systems; it does not establish any timing guarantee. The client's own timeout deadline uses `time.monotonic`.
 - **One TCP connection per sample.** The emulators reply once and close the connection, so a response ends when the connection closes. This limits the practical sampling rate; the configured maximum is 1000 Hz.
 - **Emulator limitations:**
   - The emulators generate independent random values with no known true current, so the statistics describe spread within a run, not accuracy.
@@ -108,7 +108,7 @@ The suite has 413 pytest tests and runs in a few seconds.
   - The demo waits a fixed 5 s for them to start, like `main.py`. Both then check that every emulator thread is still alive. This catches a startup crash, such as a port in use, but does not prove that a server is ready.
 - **Numeric IPv4 addresses only (client policy).** Separately from what the emulators support, the client deliberately accepts only numeric IPv4 addresses, such as `127.0.0.1`. This avoids hostname resolution and connection attempts to several resolved addresses, so one connection attempt shares a single timeout budget with sending and receiving. Supporting hostnames or IPv6 would need resolution and a policy for dividing the budget between several addresses.
 - **Bounded runs.** At most 1,000,000 potential attempts per run, because every attempt record is kept in memory, and `measurements_count` must fit a signed 64-bit integer so it can be archived.
-- **Platforms.** Development and validation were done on Windows 10 with Python 3.11.3. The code uses only portable standard-library features plus PyYAML, and the README gives Linux/macOS commands, but those were not run on Linux or macOS.
+- **Platforms.** Developed on Windows 10 with Python 3.11.3. The CI workflow passes on GitHub's Windows Server 2025, Ubuntu 26.04.1 and macOS 26.7.2 (arm64) runners with Python 3.11 ([run](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42576548988)). Other systems and Python versions have not been tested.
 
 ## Bonus challenges
 
