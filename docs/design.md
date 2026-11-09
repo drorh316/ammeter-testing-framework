@@ -82,7 +82,7 @@ The file is identified by SQLite's `application_id`, and the schema version (1) 
 
 ## Testing strategy
 
-The suite has 423 pytest tests and runs in a few seconds.
+The pytest suite runs in a few seconds; `python -m pytest` and the CI job logs show the current number of tests.
 
 - **Unit tests with fakes.** A fake socket, fake clock and sleep, and a scripted measurement function cover the client, scheduler, analysis and configuration. These tests start no emulators, make no network connections and do not really sleep. This is how communication errors, timeouts and invalid replies are simulated.
 - **Emulator and startup tests** (`tests/test_emulators.py`):
