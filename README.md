@@ -237,7 +237,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 - `0`: success.
 - `1`: expected operational failure, such as a missing database or run, an invalid or unsupported archive, an existing export destination, or a configuration problem. The CLI prints one `error: ...` line on stderr.
 - `2`: invalid command-line usage, such as an unknown option, a malformed run ID or timestamp, a limit out of range, or `--since` not earlier than `--until`.
-- Unexpected errors (programming errors) are not caught and show their traceback.
+- Unexpected exceptions are not caught; they propagate and show their traceback.
 
 **Examples, Windows PowerShell:**
 
@@ -272,7 +272,7 @@ The same operations are available in Python: `ResultArchive(path).list_runs(...)
 - Returns the measured current as a `float`.
 - Reads until the emulator closes the connection (which the emulators do after replying), so a response split across several TCP reads is reassembled.
 - `timeout` (seconds, must be positive and finite) is **one shared budget** for the whole network exchange: connecting, sending the command, and receiving the complete response. One deadline is set before connecting; each blocking operation (`connect`, `sendall`, every `recv`) is given only the time left, and a response whose end arrives after the deadline is rejected. The total can still overrun slightly because of normal operating-system scheduling; it is not a hard real-time guarantee.
-- `host` must be a **numeric IPv4 address** (default `127.0.0.1`, where the emulators listen). Hostnames such as `localhost`, IPv6 addresses and DNS resolution are not supported; an unsupported value raises `ValueError` before any network activity.
+- `host` must be a **numeric IPv4 address** (default `127.0.0.1`). This is a deliberate client policy, separate from what the emulators support (they listen on IPv4 `localhost`). A numeric address needs no hostname resolution and gives exactly one address to connect to, so connecting, sending and receiving can share one timeout budget without trying several resolved addresses. Hostnames such as `localhost` and IPv6 addresses are therefore not accepted; an unsupported value raises `ValueError` before any network activity.
 - Raises an `AmmeterCommunicationError` subclass that names the port, with the original exception kept as `__cause__`:
   - `AmmeterConnectionError`: the connection was refused, reset, or otherwise failed.
   - `AmmeterTimeoutError`: connecting, sending and receiving did not all finish within the timeout budget.
@@ -330,7 +330,7 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 ## Known Limitations
 
 - **Timing:** timing is best-effort and depends on the operating system and its load; it is not a real-time guarantee. Each attempt records its scheduled and actual start. Missed slots are skipped, not caught up. The client's request deadline uses `time.monotonic`, which advanced in 15.625 ms steps on the development Windows machine.
-- **Connections:** each sample is a separate TCP connection, and a response ends when the emulator closes the connection. Only numeric IPv4 addresses are accepted, because the emulators listen on IPv4.
+- **Connections:** each sample is a separate TCP connection, and a response ends when the emulator closes the connection. The emulators listen on IPv4 only. Separately, the client accepts only numeric IPv4 addresses, by design: this avoids hostname resolution and attempts to several addresses within one timeout budget (see [Client behaviour](#client-behaviour)).
 - **Emulator startup:** `main.py` and the demo wait a fixed 5 seconds for the emulators to start, and the emulators print their own output while being sampled.
 - **No accuracy assessment:** the emulators return independent random values with no known true current, so the statistics describe consistency within a run, not accuracy. The comparison does not rank devices.
 - **Run size:** at most 1,000,000 potential attempts per run, because all attempt records are kept in memory.

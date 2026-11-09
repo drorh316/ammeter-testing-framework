@@ -38,10 +38,13 @@ Every run returns the same result structure, whichever ammeter produced it. That
 The assignment asks for unique run IDs, metadata, and easy retrieval and comparison of past results. It also asks for minimal external dependencies and cross-platform code.
 
 - **No new dependency or server.** `sqlite3` ships with Python, and the archive is one portable file. PyYAML stays the only runtime dependency.
-- **Transactions and constraints.** A run and its rows are saved all-or-nothing. The database enforces types, finite numbers, foreign keys and status consistency, in addition to the Python validation.
-- **Queries.** Filtering by device and time and comparing runs are simple SQL, instead of scanning a folder of files.
+- **Built-in querying, relational constraints and transactional storage.**
+  - **Querying:** listing filters runs by device and start time in SQL (supported by an index on device and start time), without reading measurement rows.
+  - **Constraints:** the schema enforces types, finite numbers, foreign keys between the tables and statistics consistent with their status, in addition to the Python validation.
+  - **Transactions:** a run and all its rows are saved in one transaction.
+- **Comparison is done in Python.** `compare_runs` loads both runs through `load_run` and computes the side-by-side view and the differences in Python; SQL is only used to read the runs.
 - **Alternatives considered:**
-  - JSON files per run would be simpler, but they give no atomic multi-file writes, index or query support.
+  - One JSON file per run would be simpler and would also work. Filtering would then mean reading and parsing every file, and the checks that the database enforces would have to be written and kept in Python.
   - A server database such as PostgreSQL would handle many concurrent writers better, but it would need a server and a driver dependency, which is out of proportion for one test station.
 
 ## Tables and relationships
@@ -68,10 +71,14 @@ The file is identified by SQLite's `application_id`, and the schema version (1) 
 ## Error handling
 
 - **Configuration** is validated completely in the `AmmeterTestFramework` constructor, before any network activity. Errors are `ConfigError` and name the field.
-- **Communication failures** are recorded as failed attempts, and sampling continues at the next slot. There are no automatic retries. Other exceptions, which would be programming errors, are not caught.
+- **Communication failures** are recorded as failed attempts, and sampling continues at the next slot. There are no automatic retries. Other, unexpected exceptions are not caught; they propagate to the caller.
 - **Analysis:** only `AnalysisError` (a statistic that cannot be represented as a finite float) is caught. The measurements are kept and the analysis status becomes `error`.
-- **Storage** errors are `ArchiveError` subclasses with the SQLite error as `__cause__`. If a finished run cannot be saved, `ResultArchiveError.result` still holds the complete in-memory result, so no data is silently lost.
-- **CLI exit codes:** `0` success, `1` expected operational failure (one `error:` line on stderr), `2` invalid usage. Unexpected errors keep their traceback.
+- **Storage** errors are `ArchiveError` subclasses.
+  - When an SQLite or filesystem error is wrapped (for example a locked or malformed database, a rejected insert, or a failed directory creation or export write), the original exception is kept as `__cause__`.
+  - Errors the archive detects itself have no underlying SQLite exception. Examples: a missing database or run, a foreign archive, an unsupported schema version, a duplicate run ID, or inconsistent rows.
+  - Invalid input is rejected with `ValueError` before the database is opened.
+  - If a finished run cannot be saved, `ResultArchiveError.result` still holds the complete in-memory result, so no data is silently lost.
+- **CLI exit codes:** `0` success, `1` expected operational failure (one `error:` line on stderr), `2` invalid usage. Unexpected exceptions are not caught and propagate with their traceback.
 
 ## Testing strategy
 
@@ -96,8 +103,9 @@ The suite has 413 pytest tests and runs in a few seconds.
 - **Emulator limitations:**
   - The emulators generate independent random values with no known true current, so the statistics describe spread within a run, not accuracy.
   - The comparison shows signed differences only, without ranking devices or labelling results as pass or fail.
-  - The emulators listen on IPv4 only, so the client accepts numeric IPv4 addresses only.
+  - The emulators listen on IPv4 only (an IPv4 socket bound to `localhost`).
   - The demo waits a fixed 5 s for them to start, like `main.py`.
+- **Numeric IPv4 addresses only (client policy).** Separately from what the emulators support, the client deliberately accepts only numeric IPv4 addresses, such as `127.0.0.1`. This avoids hostname resolution and connection attempts to several resolved addresses, so one connection attempt shares a single timeout budget with sending and receiving. Supporting hostnames or IPv6 would need resolution and a policy for dividing the budget between several addresses.
 - **Bounded runs.** At most 1,000,000 potential attempts per run, because every attempt record is kept in memory, and `measurements_count` must fit a signed 64-bit integer so it can be archived.
 - **Platforms.** Development and validation were done on Windows 10 with Python 3.11.3. The code uses only portable standard-library features plus PyYAML, and the README gives Linux/macOS commands, but those were not run on Linux or macOS.
 
@@ -107,6 +115,6 @@ The suite has 413 pytest tests and runs in a few seconds.
 |---|---|
 | Configuration-driven testing | Implemented: devices, sampling limits and archiving come from the validated `config/config.yaml`. |
 | Error simulation | Only in the automated tests, through fakes (connection errors, timeouts, invalid replies). There is no runtime fault-injection mode. |
-| Visualization | Not implemented (would add plotting dependencies). |
+| Visualization | Not implemented; prioritized required functionality. |
 | Performance consistency evaluation | Not implemented as a feature. Per-run standard deviation and per-attempt timing are recorded and can be compared, but no consistency score is computed. |
 | Accuracy assessment | Not implemented. The emulators produce independent random values with no reference current, so relative accuracy cannot be established from their output. |
