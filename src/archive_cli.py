@@ -4,9 +4,9 @@ Run from the project root:
 
     python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 
-Commands: ``list``, ``show RUN_ID``, ``compare RUN_ID_A RUN_ID_B`` and
-``export RUN_ID OUTPUT_PATH``. ``--db`` and ``--config`` are global options and go
-before the command.
+Commands: ``list``, ``show RUN_ID``, ``compare RUN_ID_A RUN_ID_B``,
+``export RUN_ID OUTPUT_PATH`` and ``performance RUN_ID [limits]``. ``--db`` and
+``--config`` are global options and go before the command.
 
 Database selection:
 - ``--db PATH`` opens that file; a relative path is resolved against the current working
@@ -19,6 +19,8 @@ No command creates a database, changes one, or starts the emulators.
 
 Exit codes: 0 success, 1 expected operational failure (missing database or run, invalid
 archive, export destination exists, configuration problem), 2 invalid command-line usage.
+``performance`` also exits with 1, after printing the complete report, when a configured
+limit fails or cannot be evaluated (status ``fail`` or ``insufficient_data``).
 Expected failures print one ``error:`` line on stderr; unexpected errors keep their traceback.
 """
 import argparse
@@ -34,6 +36,12 @@ from src.testing.archive import (
     ArchiveError,
     ResultArchive,
     validate_run_id,
+)
+from src.testing.performance import (
+    STATUS_NOT_EVALUATED,
+    STATUS_PASS,
+    PerformanceLimits,
+    build_performance_report,
 )
 from src.utils.config import ConfigError, load_config, parse_result_management
 
@@ -66,6 +74,30 @@ def _ammeter(text: str) -> str:
     if not text:
         raise argparse.ArgumentTypeError("must be a non-empty device name")
     return text
+
+
+def _number(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from exc
+    if value != value or value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {text!r}")
+    return value
+
+
+def _seconds_limit(text: str) -> float:
+    value = _number(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be at least 0 seconds, got {text!r}")
+    return value
+
+
+def _rate_limit(text: str) -> float:
+    value = _number(text)
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1, got {text!r}")
+    return value
 
 
 def _limit(text: str) -> int:
@@ -112,6 +144,19 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("run_id", type=_run_id, metavar="RUN_ID")
     export_parser.add_argument("output", type=Path, metavar="OUTPUT_PATH",
                                help="new file (relative to the current directory); never overwritten")
+
+    performance_parser = commands.add_parser(
+        "performance", help="timing and failure consistency of one run, with optional limits (JSON)",
+        description="Report failure rate, skipped-slot rate, start lateness and request duration for one "
+                    "archived run. Limits are optional and user-defined; a value equal to a limit passes. "
+                    "Exit 1 (after printing the report) if a configured limit fails or cannot be evaluated.")
+    performance_parser.add_argument("run_id", type=_run_id, metavar="RUN_ID")
+    performance_parser.add_argument("--max-start-lateness", type=_seconds_limit, metavar="SECONDS",
+                                    help="limit for the largest start lateness, in seconds")
+    performance_parser.add_argument("--max-failure-rate", type=_rate_limit, metavar="RATE",
+                                    help="limit for failed / attempted (0 to 1)")
+    performance_parser.add_argument("--max-skipped-slot-rate", type=_rate_limit, metavar="RATE",
+                                    help="limit for skipped / (attempted + skipped) (0 to 1)")
     return parser
 
 
@@ -165,6 +210,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(_json(archive.load_run(args.run_id)))
         elif args.command == "compare":
             print(_json(archive.compare_runs(args.run_id_a, args.run_id_b)))
+        elif args.command == "performance":
+            limits = PerformanceLimits(max_start_lateness_s=args.max_start_lateness,
+                                       max_failure_rate=args.max_failure_rate,
+                                       max_skipped_slot_rate=args.max_skipped_slot_rate)
+            report = build_performance_report(archive.load_run(args.run_id), limits)
+            print(_json(report))
+            status = report["thresholds"]["status"]
+            if status not in (STATUS_PASS, STATUS_NOT_EVALUATED):
+                print(f"performance limits: {status}", file=sys.stderr)
+                return EXIT_FAILURE
         else:
             written = archive.export_run(args.run_id, args.output)
             print(f"Exported run {args.run_id} to {written}")

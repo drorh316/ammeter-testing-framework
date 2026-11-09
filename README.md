@@ -52,6 +52,7 @@ python -m venv .venv
   - `testing/`
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
+    - `performance.py`: `build_performance_report`: timing and failure consistency of one run, with optional user-defined limits.
     - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load, list, compare, export).
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
@@ -63,6 +64,7 @@ python -m venv .venv
   - `test_sampling.py`: Scheduler tests with a fake clock, sleep and measurement function.
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
   - `test_analysis.py`: Statistics tests.
+  - `test_performance.py`: Performance report and `performance` command tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
   - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
@@ -206,7 +208,7 @@ Numeric columns must hold finite numbers of the right type. Integers must fit SQ
 
 ### Querying the archive (command line)
 
-`src/archive_cli.py` lists, shows, compares and exports archived runs. Run it from the project root (so that `-m src.archive_cli` is found), with the virtual environment's Python:
+`src/archive_cli.py` lists, shows, compares and exports archived runs, and reports their performance consistency. Run it from the project root (so that `-m src.archive_cli` is found), with the virtual environment's Python:
 
 ```
 python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
@@ -218,6 +220,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 | `show RUN_ID` | The complete run (settings, every attempt, statistics) as JSON. |
 | `compare RUN_ID_A RUN_ID_B` | Both runs' device, settings, counts and analysis status, and the five metrics side by side, as JSON. |
 | `export RUN_ID OUTPUT_PATH` | Writes the complete run to a new UTF-8 JSON file. |
+| `performance RUN_ID [--max-start-lateness SECONDS] [--max-failure-rate RATE] [--max-skipped-slot-rate RATE]` | The run's [performance consistency report](#performance-consistency-report) as JSON, with optional limits. |
 
 **Which database.** `--db` and `--config` are global options and go **before** the command; only one of them can be given.
 - `--db PATH` reads that file; a relative path is resolved against the current working directory. The configuration is not read, so this works whether archiving is enabled, disabled or not configured.
@@ -242,8 +245,8 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 
 **Exit codes.**
 - `0`: success.
-- `1`: expected operational failure, such as a missing database or run, an invalid or unsupported archive, an existing export destination, or a configuration problem. The CLI prints one `error: ...` line on stderr.
-- `2`: invalid command-line usage, such as an unknown option, a malformed run ID or timestamp, a limit out of range, or `--since` not earlier than `--until`.
+- `1`: expected operational failure, such as a missing database or run, an invalid or unsupported archive, an existing export destination, or a configuration problem. The CLI prints one `error: ...` line on stderr. For `performance`, also a configured limit that fails or cannot be evaluated; the complete report is still printed, followed by `performance limits: fail` (or `insufficient_data`) on stderr.
+- `2`: invalid command-line usage, such as an unknown option, a malformed run ID or timestamp, a limit out of range (including a negative lateness limit or a rate outside 0-1), or `--since` not earlier than `--until`.
 - Unexpected exceptions are not caught; they propagate and show their traceback.
 
 **Examples, Windows PowerShell:**
@@ -271,6 +274,47 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 The run IDs above are those of the runs in [`sample_results/`](sample_results/README.md). Your own archive has different IDs; copy them from `list`.
 
 The same operations are available in Python: `ResultArchive(path).list_runs(...)`, `load_run(run_id)`, `compare_runs(a, b)` and `export_run(run_id, path)`.
+
+### Performance consistency report
+
+`python -m src.archive_cli performance RUN_ID` (or `build_performance_report(run, limits)` in `src/testing/performance.py`) reports **how consistently a run was carried out**: failures, skipped schedule slots, how late each request started and how long it took. It is built from an archived run without changing the archive, and it changes nothing about sampling.
+
+It does **not** describe the measured current: the spread of the current values is in the run's [analysis](#analysis). It also says nothing about accuracy, and it does not try to explain why a request was late.
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `ammeter`, `started_at_utc`, `settings` | Which run, and its effective sampling settings. |
+| `counts` | `attempted`, `succeeded`, `failed`, `skipped_slots`. |
+| `rates.failure_rate` | `failed / attempted`; `null` with no attempts. |
+| `rates.skipped_slot_rate` | `skipped_slots / (attempted + skipped_slots)`: of the schedule slots inside the run, the share that was passed over instead of used. `null` when both are zero. |
+| `start_lateness_s` | Summary of each attempt's actual start minus its scheduled start. |
+| `request_duration_s` | Summary of each attempt's duration, until it returned or failed. |
+| `thresholds` | Overall `status` and one entry per configured limit. |
+
+**Timing summaries.**
+- They are in **seconds** and use **every attempt, successful or failed**. A timed-out request counts with its real duration.
+- Each summary has `count`, `mean_s`, `median_s`, `stddev_population_s`, `p95_s` and `max_s`.
+- With no attempts, `count` is 0 and the other values are `null`.
+- Values keep their full stored precision; nothing is rounded.
+- `p95_s` uses the **nearest-rank** method, `sorted_values[ceil(0.95 * n) - 1]` (computed with integer arithmetic), so it is always an observed value. With fewer than 20 attempts it equals the maximum.
+
+**Optional limits.** There are no built-in acceptance limits. These limits are chosen by the user and are not requirements of the assignment.
+
+| Option | Check | Allowed values |
+|---|---|---|
+| `--max-start-lateness SECONDS` | `start_lateness_s.max_s` <= limit | finite, >= 0 |
+| `--max-failure-rate RATE` | `rates.failure_rate` <= limit | 0 to 1 |
+| `--max-skipped-slot-rate RATE` | `rates.skipped_slot_rate` <= limit | 0 to 1 |
+
+- **Check results:** a value **equal to its limit passes**. Each configured check reports `pass`, `fail` or `insufficient_data` (the value is `null`, for example with no attempts), together with its `observed` value and `limit`.
+- **Overall status:**
+  - `not_evaluated` when no limits are given;
+  - `fail` if any check fails;
+  - `insufficient_data` if none fails but one cannot be evaluated;
+  - `pass` otherwise.
+- **Exit codes:** `0` for `pass` or `not_evaluated`; `1` for `fail` or `insufficient_data`, with the full report still printed; `2` for an invalid limit.
+
+Example: [`sample_results/greenlee_performance.json`](sample_results/README.md#performance-report).
 
 ### Client behaviour
 
