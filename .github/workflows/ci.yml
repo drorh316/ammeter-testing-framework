@@ -1,0 +1,88 @@
+name: cross-platform
+
+# Runs the test suite and the real emulator scripts on Windows, Ubuntu and macOS.
+# Failures are not retried or ignored; each job uploads its results archive and
+# test report when it fails.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python 3.11
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false # report every OS; any failure still fails the run
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash # the same commands on every OS (Git Bash on Windows)
+    env:
+      PYTHONUNBUFFERED: "1" # keep emulator and script output in order in the log
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Show the environment
+        run: |
+          python --version
+          python -c "import sqlite3, sys, locale; print('platform', sys.platform, '| sqlite', sqlite3.sqlite_version, '| stdout encoding (redirected)', sys.stdout.encoding, '| locale', locale.getpreferredencoding(False))"
+
+      - name: Install dependencies
+        timeout-minutes: 5
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip list
+
+      - name: Run the test suite
+        timeout-minutes: 5
+        run: python -m pytest --junitxml=test-reports/junit.xml
+
+      - name: Run main.py against the emulators
+        timeout-minutes: 2
+        run: python main.py
+
+      - name: Run the sampling demo (sample, analyse, archive, reload)
+        timeout-minutes: 3
+        run: python -m examples.run_tests
+
+      - name: Verify the archived runs in a separate process
+        timeout-minutes: 2
+        run: |
+          python - <<'EOF'
+          from src.testing.archive import ResultArchive
+          from src.utils.config import load_config, parse_result_management
+
+          path = parse_result_management(load_config()).database_path
+          archive = ResultArchive(path)
+          runs = archive.list_runs()
+          assert sorted(r["ammeter"] for r in runs) == ["circutor", "entes", "greenlee"], runs
+          for r in runs:
+              assert r["counts"]["attempted"] > 0 and r["counts"]["failed"] == 0, r
+              assert r["analysis_status"] == "ok", r
+              assert archive.load_run(r["run_id"])["counts"] == r["counts"], r
+          print(f"verified {len(runs)} archived runs in {path}")
+          EOF
+          python -m src.archive_cli list
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            results/
+            test-reports/
+          if-no-files-found: ignore
+          retention-days: 7
