@@ -9,7 +9,7 @@ Three runs exported from a real archive, one per supplied ammeter emulator:
 | `circutor_run.json` | CIRCUTOR (port 5003) | `ddb11a26-286e-4ea5-a1a9-20e57fdde8ce` | 2026-11-08 17:51:08 |
 
 ## Source
-- **Where the runs came from:** one run of the sampling demo (`python -m examples.run_tests`) on 2026-11-08, on Windows 10 with Python 3.11, from the Stage A archive code. The demo saved the runs to the local archive `results/ammeter_results.sqlite3`. That archive is not committed.
+- **Where the runs came from:** one run of the sampling demo (`python -m examples.run_tests`) on 2026-11-08, on Windows 10 with Python 3.11, using an earlier commit of this repository. The archive format has not changed since. The demo saved the runs to the local archive `results/ammeter_results.sqlite3`. That archive is not committed.
 - **How they were exported:** with `python -m src.archive_cli export RUN_ID sample_results/<name>_run.json`. Each file is the complete archived run, exactly as `show` prints it: the effective settings, every attempt with its timing, and the statistics.
 - **Settings used:** the shipped `config/config.yaml`: 5 Hz, `measurements_count` 10, `total_duration_seconds` 3.0, `request_timeout_seconds` 1.0, emulators on 127.0.0.1.
 - **Outcome:** every run made 10 attempts, all successful, with no skipped slots. Each stopped with `count_reached` after about 1.8 s.

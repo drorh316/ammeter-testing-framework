@@ -2,6 +2,32 @@
 
 This project provides emulators for different types of ammeters: Greenlee, ENTES, and CIRCUTOR. Each ammeter emulator runs on a separate thread and can respond to current measurement requests.
 
+On top of the emulators it adds a testing framework:
+- one client call for all three ammeter types;
+- configurable sampling by count, duration and frequency;
+- statistics for each run (mean, median, standard deviation, minimum, maximum);
+- a SQLite archive of runs, with a command-line tool to list, show, compare and export them.
+
+**Requirements**
+- **Python 3.11 or newer.** The code uses 3.11 features such as exception notes and `sqlite3` error names. It was developed and tested with Python 3.11.3 on Windows 10.
+- **PyYAML** is the only third-party runtime dependency, and **pytest** is used for the tests (see [Development Setup and Tests](#development-setup-and-tests)). `main.py` itself needs only the standard library.
+- **Platforms:** the code uses only portable standard-library features. Linux/macOS commands are given below but have not been run on those systems.
+
+**Quick start** (Windows PowerShell, from the project root; Linux/macOS equivalents are in each section):
+```powershell
+python main.py                                         # one measurement from each emulator
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest                     # automated tests
+.\.venv\Scripts\python.exe -m examples.run_tests         # sample every ammeter and archive the runs
+.\.venv\Scripts\python.exe -m src.archive_cli list       # query the archive
+```
+
+**Further documentation**
+- [docs/design.md](docs/design.md): design decisions, data flow, storage, error handling, testing strategy, tradeoffs and the status of the bonus challenges.
+- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type.
+- [Known limitations](#known-limitations) and [Fixes to the Supplied Code](#fixes-to-the-supplied-code).
+
 ## Project Structure
 
 - `main.py`: Main script (project root) to start the ammeter emulators and request current measurements.
@@ -37,6 +63,8 @@ This project provides emulators for different types of ammeters: Greenlee, ENTES
   - `test_archive_cli.py`: Command-line interface tests, including exit codes.
   - `fakes.py`: Shared fake clock, sleep and measurement function.
   - `conftest.py`: Stops any test from writing to the shipped results database.
+- `docs/`
+  - `design.md`: Design decisions (see above).
 - `sample_results/`: Three runs exported from the demo archive, one per ammeter type (see its README).
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
@@ -298,6 +326,24 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **Command**: `MEASURE_CIRCUTOR -get_measurement -current`
 - **Measurement Logic**: Calculates current using voltage values (0.1V - 1.0V) over a number of samples and a random time step (0.001s - 0.01s).
 - **Measurement method** : Rogowski Coil Integration: I = ∫V dt
+
+## Known Limitations
+
+- **Timing:** timing is best-effort and depends on the operating system and its load; it is not a real-time guarantee. Each attempt records its scheduled and actual start. Missed slots are skipped, not caught up. The client's request deadline uses `time.monotonic`, which advanced in 15.625 ms steps on the development Windows machine.
+- **Connections:** each sample is a separate TCP connection, and a response ends when the emulator closes the connection. Only numeric IPv4 addresses are accepted, because the emulators listen on IPv4.
+- **Emulator startup:** `main.py` and the demo wait a fixed 5 seconds for the emulators to start, and the emulators print their own output while being sampled.
+- **No accuracy assessment:** the emulators return independent random values with no known true current, so the statistics describe consistency within a run, not accuracy. The comparison does not rank devices.
+- **Run size:** at most 1,000,000 potential attempts per run, because all attempt records are kept in memory.
+- **Archive:**
+  - One writer at a time.
+  - No incremental checkpoints: a crash during sampling loses that run.
+  - No schema migrations; tables and columns are checked by name only.
+  - `compare` loads its two runs in separate snapshots.
+  - `list` has no paging (at most 1000 runs).
+- **Export** is not atomic: a process killed while writing can leave a partial file.
+- **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
+- **Not implemented** (optional bonuses): visualization, runtime error simulation, and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
+- **Platforms:** validated only on Windows 10 with Python 3.11.3.
 
 ## Fixes to the Supplied Code
 
