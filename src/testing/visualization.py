@@ -20,9 +20,15 @@ failed attempts or skipped slots. Value axes are not clipped: negative currents 
 negative axis.
 
 Histogram bins: Sturges' rule, ``ceil(log2(n)) + 1`` equal-width bins over [min, max]
-(at most MAX_HISTOGRAM_BINS). Each bin is [left, right) except the last, which also
-includes the maximum. When all values are identical (including a single value) there is
-one bin centred on that value.
+(at most MAX_HISTOGRAM_BINS). Each value is counted against the returned edges: bin i is
+[edges[i], edges[i+1]), and the last bin also includes the maximum. If floating-point
+rounding makes neighbouring edges equal (a range only a few float steps wide), the
+duplicates are dropped and there are fewer bins. When all values are identical (including
+a single value) there is one bin centred on that value.
+
+Tiny values: a constant subnormal value gets a display range of one float step on each
+side, because 10% of it rounds away. Coordinates are computed from exact differences, so
+such ranges are not collapsed.
 
 Rendering cap: at most MAX_RENDERED_POINTS attempts are drawn per chart. Larger runs are
 downsampled with evenly spaced attempts: failed attempts are all kept if they fit in half
@@ -33,6 +39,7 @@ histogram always use the full run.
 Precision: the run data are not changed; only displayed labels are rounded. Every piece of
 text from the run (device name, command, error messages, ...) is HTML-escaped.
 """
+import bisect
 import html
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -57,7 +64,16 @@ def _e(value: Any) -> str:
 # --- Numbers, axes and ticks ------------------------------------------------------------
 
 def _fraction(value: float, lo: float, hi: float) -> float:
-    """Position of ``value`` in [lo, hi] as 0..1, without overflow for extreme floats."""
+    """Position of ``value`` in [lo, hi] (``lo < hi``) as 0..1.
+
+    The plain differences are used whenever ``hi - lo`` is finite; they stay exact and
+    non-zero even for subnormal ranges, where halving the ends could collapse them. Only
+    a range too wide to represent (for example -1.7e308 to 1.7e308) is mapped with halved
+    ends, which cannot overflow.
+    """
+    span = hi - lo
+    if math.isfinite(span):
+        return (value - lo) / span
     return (value * 0.5 - lo * 0.5) / (hi * 0.5 - lo * 0.5)
 
 
@@ -66,6 +82,8 @@ def _expand_constant(lo: float, hi: float) -> Tuple[float, float]:
     if hi > lo:
         return lo, hi
     pad = abs(lo) * 0.1 if lo != 0 else 1.0
+    if lo - pad == lo or lo + pad == lo:  # 10% of a tiny (subnormal) value rounds away
+        pad = math.ulp(lo)  # the spacing of floats at lo, so the range is one step each way
     left, right = lo - pad, lo + pad
     if not math.isfinite(right):  # near the largest float: extend downwards only
         left, right = lo - 2 * pad, lo
@@ -124,10 +142,19 @@ def histogram(values: Sequence[float]) -> Dict[str, Any]:
         return {"edges": [left, right], "counts": [len(values)]}
     bins = min(MAX_HISTOGRAM_BINS, math.ceil(math.log2(len(values))) + 1)
     # A weighted average of the ends cannot overflow, even for extreme finite values.
-    edges = [lo * (1 - i / bins) + hi * (i / bins) for i in range(bins)] + [hi]
-    counts = [0] * bins
+    raw = [lo * (1 - i / bins) + hi * (i / bins) for i in range(1, bins)]
+    # Rounding can make neighbouring edges equal (or, in principle, out of order) when the
+    # range is only a few float steps wide. Such edges are dropped, leaving fewer bins;
+    # no edge is ever moved.
+    edges = [lo]
+    for edge in raw:
+        if edges[-1] < edge < hi:
+            edges.append(edge)
+    edges.append(hi)
+    counts = [0] * (len(edges) - 1)
     for value in values:
-        index = min(int(_fraction(value, lo, hi) * bins), bins - 1)
+        # Bin i is [edges[i], edges[i+1]); the maximum belongs to the last bin.
+        index = len(counts) - 1 if value == hi else bisect.bisect_right(edges, value) - 1
         counts[index] += 1
     return {"edges": edges, "counts": counts}
 

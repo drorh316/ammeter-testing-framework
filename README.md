@@ -344,11 +344,11 @@ A note at the top states that the values are random emulator readings and do not
 
 - **Axes:** the three time-based charts share the same x axis, so they line up vertically. Each chart has axis titles with units, tick labels and a legend. Tick labels use the fewest significant digits (at least 3) that keep them distinct; only the labels are rounded, not the data.
 - **Scatter only:** points are never connected, so no line crosses a failed attempt or a skipped slot.
-- **Value axes are never clipped:** negative currents get a negative axis. A single value, or identical values, get a small range around the value.
+- **Value axes are never clipped:** negative currents get a negative axis. A single value, or identical values, get a range of ±10% around the value (±1 for zero, or one float step either side for subnormal values, where 10% would round away).
 - **Edge cases:**
   - A run with no attempts, or with no successful readings, shows a message in the empty chart.
   - A failed analysis is shown with its error, and the readings are still plotted.
-- **Histogram bins:** Sturges' rule, `ceil(log2(n)) + 1` equal-width bins between the smallest and largest reading (at most 50). Each bin includes its left edge; the last bin also includes the maximum. Identical readings, including a single reading, give one bin.
+- **Histogram bins:** Sturges' rule, `ceil(log2(n)) + 1` equal-width bins between the smallest and largest reading (at most 50). Each bin includes its left edge; the last bin also includes the maximum. Identical readings, including a single reading, give one bin. Readings are counted against the returned edges. If floating-point rounding makes neighbouring edges equal (a range only a few float steps wide), the duplicate edges are dropped, giving fewer bins; edges are never shifted.
 - **Large runs:** the three point charts draw at most **2000 attempts** each.
   - Above that, they show an evenly spaced subset. Every failed attempt is kept if failures fit in half of the 2000-point cap; otherwise evenly spaced failures fill that half, and successful attempts fill the rest.
   - A "Downsampled charts" note gives the exact numbers shown.

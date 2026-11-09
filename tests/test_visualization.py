@@ -92,6 +92,62 @@ def test_histogram_counts_follow_sturges_rule():
     assert hist["counts"] == [2, 2, 2, 2, 2]  # [0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,1.0]: the maximum is in the last bin
 
 
+def counts_from_edges(values, edges):
+    """Independent check: count each value by comparing it with the returned edges."""
+    counts = [0] * (len(edges) - 1)
+    for value in values:
+        if value == edges[-1]:
+            counts[-1] += 1
+            continue
+        matches = [i for i in range(len(counts)) if edges[i] <= value < edges[i + 1]]
+        assert len(matches) == 1, (value, edges)
+        counts[matches[0]] += 1
+    return counts
+
+
+def test_histogram_reproduction_counts_match_the_returned_edges():
+    hist = histogram([0.1, 0.2, 0.3, 0.4])  # 3 bins; 0.2 and 0.3 lie exactly on internal edges
+
+    assert hist == {"edges": [0.1, 0.2, 0.3, 0.4], "counts": [1, 1, 2]}
+    assert hist["counts"] == counts_from_edges([0.1, 0.2, 0.3, 0.4], hist["edges"])
+
+
+def test_values_exactly_on_internal_edges_go_to_the_right_hand_bin():
+    values = [0.0, 0.25, 0.5, 0.75, 1.0]  # n = 5 -> 4 bins with exactly representable edges
+    hist = histogram(values)
+
+    assert hist["edges"] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    assert hist["counts"] == [1, 1, 1, 2]  # [0,.25) [.25,.5) [.5,.75) [.75,1.0]
+
+
+@pytest.mark.parametrize("values", [
+    [0.1 * i for i in range(1, 30)],
+    [-3.3, -1.1, 0.0, 0.7, 2.2, 2.2, 9.9],
+    [1e-9 * i + 0.3 for i in range(17)],
+    [-1.7e308, -1.0, 0.0, 1.0, 1.7e308],
+])
+def test_histogram_counts_always_agree_with_the_returned_edges(values):
+    hist = histogram(values)
+    edges = hist["edges"]
+    assert all(a < b for a, b in zip(edges, edges[1:]))  # strictly increasing
+    assert edges[0] == min(values) and edges[-1] == max(values)
+    assert hist["counts"] == counts_from_edges(values, edges) and sum(hist["counts"]) == len(values)
+
+
+def test_edges_that_round_together_are_dropped_not_moved():
+    one_step = math.nextafter(1.0, 2.0)
+    values = [1.0, 1.0, one_step, one_step]  # 3 bins requested over a range one float step wide
+
+    hist = histogram(values)
+
+    assert hist["edges"] == [1.0, one_step] and hist["counts"] == [4]  # one bin [min, max] holds everything
+    assert hist["counts"] == counts_from_edges(values, hist["edges"])
+
+    tiny = [5e-324, 1e-323, 1e-323]
+    tiny_hist = histogram(tiny)
+    assert tiny_hist["counts"] == counts_from_edges(tiny, tiny_hist["edges"]) and sum(tiny_hist["counts"]) == 3
+
+
 def test_histogram_of_identical_values_or_one_value_has_one_bin():
     assert histogram([0.25, 0.25, 0.25])["counts"] == [3]
     one = histogram([-0.5])
@@ -208,6 +264,25 @@ def test_extreme_values_render_without_infinity_or_nan():
     assert not re.search(r"\binf\b|\bnan\b", document.lower())
     svg = charts(document)  # still well-formed
     assert all(math.isfinite(y) for y in circle_ys(svg["chart-current"]))
+
+
+COORDINATE = re.compile(r'\b(?:cx|cy|x|y|x1|y1|x2|y2|width|height)="([^"%]+)"')  # not width="100%"
+
+
+@pytest.mark.parametrize("value", [5e-324, 1e-323, -5e-324, 2.2250738585072014e-308])
+def test_tiny_constant_values_render_with_finite_coordinates(value):
+    run = make_run([value, value, None])
+
+    document = render_run_report(run)
+
+    coordinates = [float(c) for c in COORDINATE.findall(document)]
+    assert coordinates and all(math.isfinite(c) for c in coordinates)
+    svg = charts(document)
+    ys = circle_ys(svg["chart-current"])
+    assert len(ys) == 2 and all(34 < y < 250 - 48 for y in ys)
+    bins = points(svg["chart-histogram"], "bin")
+    assert len(bins) == 1 and bins[0].get("data-count") == "2"
+    assert [a.get("current_a") for a in run["attempts"]] == [value, value, None]  # data unchanged
 
 
 def test_failed_analysis_is_shown_with_its_error():
