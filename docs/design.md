@@ -82,9 +82,13 @@ The file is identified by SQLite's `application_id`, and the schema version (1) 
 
 ## Testing strategy
 
-The suite has 413 pytest tests and runs in a few seconds.
+The suite has 423 pytest tests and runs in a few seconds.
 
-- **Unit tests with fakes.** A fake socket, fake clock and sleep, and a scripted measurement function cover the client, scheduler, analysis and configuration. No emulators, network or real sleeping are involved. This is how communication errors, timeouts and invalid replies are simulated.
+- **Unit tests with fakes.** A fake socket, fake clock and sleep, and a scripted measurement function cover the client, scheduler, analysis and configuration. These tests start no emulators, make no network connections and do not really sleep. This is how communication errors, timeouts and invalid replies are simulated.
+- **Emulator and startup tests** (`tests/test_emulators.py`):
+  - Each emulator's output is checked against a strict cp1252 stream.
+  - The port-reuse option is checked with a fake socket.
+  - The startup helper is tested with short-lived threads. The startup regression test uses a real loopback socket on a temporary port chosen by the operating system (not 5001–5003): a real emulator thread fails to bind that occupied port and is reported as stopped.
 - **Real SQLite** files in temporary directories for the archive, queries and CLI. These tests cover:
   - round trips;
   - constraint violations inserted directly;

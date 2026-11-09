@@ -64,6 +64,7 @@ python -m venv .venv
   - `test_framework.py`: Configuration validation and `run_test` tests (fake client; no network).
   - `test_analysis.py`: Statistics tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
+  - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
   - `test_archive_queries.py`: Listing, filtering, comparison and export tests (real temporary archives).
   - `test_archive_cli.py`: Command-line interface tests, including exit codes.
@@ -304,7 +305,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-The tests replace the socket, clock, sleep and client with fakes, so they run in a few seconds and do not start the emulators, open network connections or really sleep. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
+Most unit tests replace the socket, clock, sleep and client with fakes, so the suite runs in a few seconds without starting the emulators on their ports, sending network requests or really sleeping. The emulator tests in `tests/test_emulators.py` are the exception: they start short-lived threads. One of them, the startup regression test, uses a real loopback socket on a temporary port chosen by the operating system (not 5001–5003) to check that an emulator whose port is in use is reported as stopped. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
 
 **Dependency change:** the supplied `requirements.txt` listed numpy, scipy, matplotlib, seaborn, pandas and pyyaml, none of which were used by the code. It now lists only PyYAML, following the "minimize external library dependencies" constraint. Libraries will be added back only if a later feature needs them.
 
