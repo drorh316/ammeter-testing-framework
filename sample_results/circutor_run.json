@@ -1,0 +1,154 @@
+{
+  "run_id": "ddb11a26-286e-4ea5-a1a9-20e57fdde8ce",
+  "ammeter": "circutor",
+  "host": "127.0.0.1",
+  "port": 5003,
+  "command": "MEASURE_CIRCUTOR -get_measurement -current",
+  "started_at_utc": "2026-11-08T17:51:08.284106+00:00",
+  "ended_at_utc": "2026-11-08T17:51:10.085102+00:00",
+  "settings": {
+    "sampling_frequency_hz": 5.0,
+    "measurements_count": 10,
+    "total_duration_seconds": 3.0,
+    "request_timeout_seconds": 1.0
+  },
+  "counts": {
+    "attempted": 10,
+    "succeeded": 10,
+    "failed": 0,
+    "skipped_slots": 0
+  },
+  "elapsed_s": 1.8012115999590605,
+  "stop_reason": "count_reached",
+  "attempts": [
+    {
+      "attempt": 1,
+      "slot": 0,
+      "scheduled_offset_s": 0.0,
+      "start_offset_s": 7.3999399319291115e-06,
+      "lateness_s": 7.3999399319291115e-06,
+      "elapsed_s": 0.0006473000394180417,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.030816849909609742
+    },
+    {
+      "attempt": 2,
+      "slot": 1,
+      "scheduled_offset_s": 0.2,
+      "start_offset_s": 0.20095999992918223,
+      "lateness_s": 0.0009599999291822203,
+      "elapsed_s": 0.023740199976600707,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.018741639331529857
+    },
+    {
+      "attempt": 3,
+      "slot": 2,
+      "scheduled_offset_s": 0.4,
+      "start_offset_s": 0.4007291999878362,
+      "lateness_s": 0.0007291999878361599,
+      "elapsed_s": 0.0005159999709576368,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.03953028333698243
+    },
+    {
+      "attempt": 4,
+      "slot": 3,
+      "scheduled_offset_s": 0.6,
+      "start_offset_s": 0.6009330999804661,
+      "lateness_s": 0.00093309998046609,
+      "elapsed_s": 0.011477499967440963,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.009535774289370299
+    },
+    {
+      "attempt": 5,
+      "slot": 4,
+      "scheduled_offset_s": 0.8,
+      "start_offset_s": 0.8009139999048784,
+      "lateness_s": 0.0009139999048783931,
+      "elapsed_s": 0.0005649999948218465,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.04997635067219493
+    },
+    {
+      "attempt": 6,
+      "slot": 5,
+      "scheduled_offset_s": 1.0,
+      "start_offset_s": 1.0010463999351487,
+      "lateness_s": 0.0010463999351486564,
+      "elapsed_s": 0.0005923999706283212,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.05916656743808307
+    },
+    {
+      "attempt": 7,
+      "slot": 6,
+      "scheduled_offset_s": 1.2,
+      "start_offset_s": 1.2008591999765486,
+      "lateness_s": 0.0008591999765485969,
+      "elapsed_s": 0.016960799926891923,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.011094434054072712
+    },
+    {
+      "attempt": 8,
+      "slot": 7,
+      "scheduled_offset_s": 1.4,
+      "start_offset_s": 1.4003095999360085,
+      "lateness_s": 0.0003095999360085422,
+      "elapsed_s": 0.01672720001079142,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.033530474871094215
+    },
+    {
+      "attempt": 9,
+      "slot": 8,
+      "scheduled_offset_s": 1.6,
+      "start_offset_s": 1.6003311999375,
+      "lateness_s": 0.0003311999374999708,
+      "elapsed_s": 0.015610900009050965,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.008187401744871377
+    },
+    {
+      "attempt": 10,
+      "slot": 9,
+      "scheduled_offset_s": 1.8,
+      "start_offset_s": 1.8005876999814063,
+      "lateness_s": 0.0005876999814062867,
+      "elapsed_s": 0.0006127000087872148,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.017589511218189094
+    }
+  ],
+  "analysis": {
+    "status": "ok",
+    "count": 10,
+    "mean_a": 0.02781692868659977,
+    "median_a": 0.0247792446205698,
+    "stddev_population_a": 0.016848763612900847,
+    "min_a": 0.008187401744871377,
+    "max_a": 0.05916656743808307
+  }
+}

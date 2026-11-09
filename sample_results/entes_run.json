@@ -1,0 +1,154 @@
+{
+  "run_id": "a6a8e389-d288-46bb-843c-270dac01d654",
+  "ammeter": "entes",
+  "host": "127.0.0.1",
+  "port": 5002,
+  "command": "MEASURE_ENTES -get_data",
+  "started_at_utc": "2026-11-08T17:51:06.468198+00:00",
+  "ended_at_utc": "2026-11-08T17:51:08.269568+00:00",
+  "settings": {
+    "sampling_frequency_hz": 5.0,
+    "measurements_count": 10,
+    "total_duration_seconds": 3.0,
+    "request_timeout_seconds": 1.0
+  },
+  "counts": {
+    "attempted": 10,
+    "succeeded": 10,
+    "failed": 0,
+    "skipped_slots": 0
+  },
+  "elapsed_s": 1.8013907000422478,
+  "stop_reason": "count_reached",
+  "attempts": [
+    {
+      "attempt": 1,
+      "slot": 0,
+      "scheduled_offset_s": 0.0,
+      "start_offset_s": 7.899943739175797e-06,
+      "lateness_s": 7.899943739175797e-06,
+      "elapsed_s": 0.025636800099164248,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 144.87712060022452
+    },
+    {
+      "attempt": 2,
+      "slot": 1,
+      "scheduled_offset_s": 0.2,
+      "start_offset_s": 0.2003557999851182,
+      "lateness_s": 0.0003557999851181992,
+      "elapsed_s": 0.011520900065079331,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 90.39242932325632
+    },
+    {
+      "attempt": 3,
+      "slot": 2,
+      "scheduled_offset_s": 0.4,
+      "start_offset_s": 0.4009141999995336,
+      "lateness_s": 0.0009141999995335715,
+      "elapsed_s": 0.011460899957455695,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 26.350226602581674
+    },
+    {
+      "attempt": 4,
+      "slot": 3,
+      "scheduled_offset_s": 0.6,
+      "start_offset_s": 0.6007379000075161,
+      "lateness_s": 0.0007379000075161679,
+      "elapsed_s": 0.01483400003053248,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 59.85348188285762
+    },
+    {
+      "attempt": 5,
+      "slot": 4,
+      "scheduled_offset_s": 0.8,
+      "start_offset_s": 0.800137700047344,
+      "lateness_s": 0.00013770004734392494,
+      "elapsed_s": 0.0004983999533578753,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 31.29780416285395
+    },
+    {
+      "attempt": 6,
+      "slot": 5,
+      "scheduled_offset_s": 1.0,
+      "start_offset_s": 1.000429500010796,
+      "lateness_s": 0.0004295000107958913,
+      "elapsed_s": 0.01866659999359399,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 22.016333202169783
+    },
+    {
+      "attempt": 7,
+      "slot": 6,
+      "scheduled_offset_s": 1.2,
+      "start_offset_s": 1.200582499965094,
+      "lateness_s": 0.0005824999650940743,
+      "elapsed_s": 0.020483599975705147,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 65.287837615936
+    },
+    {
+      "attempt": 8,
+      "slot": 7,
+      "scheduled_offset_s": 1.4,
+      "start_offset_s": 1.4001311999745667,
+      "lateness_s": 0.0001311999745667869,
+      "elapsed_s": 0.022873700014315546,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 147.40960941993185
+    },
+    {
+      "attempt": 9,
+      "slot": 8,
+      "scheduled_offset_s": 1.6,
+      "start_offset_s": 1.6009280999423936,
+      "lateness_s": 0.0009280999423935121,
+      "elapsed_s": 0.020567000028677285,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 94.29753611393208
+    },
+    {
+      "attempt": 10,
+      "slot": 9,
+      "scheduled_offset_s": 1.8,
+      "start_offset_s": 1.8006555000320077,
+      "lateness_s": 0.0006555000320076498,
+      "elapsed_s": 0.0007107999408617616,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 23.682084105392665
+    }
+  ],
+  "analysis": {
+    "status": "ok",
+    "count": 10,
+    "mean_a": 70.54644630291365,
+    "median_a": 62.57065974939681,
+    "stddev_population_a": 45.36316436923498,
+    "min_a": 22.016333202169783,
+    "max_a": 147.40960941993185
+  }
+}

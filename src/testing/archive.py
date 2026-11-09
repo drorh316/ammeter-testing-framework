@@ -32,17 +32,28 @@ Behaviour
   journal restores the database to its state before that save the next time a writing
   connection opens it. Until then a read-only load cannot complete that recovery and
   fails with ArchiveError (cause SQLITE_READONLY_ROLLBACK).
+
+Queries
+-------
+- ``list_runs`` returns short summaries (no measurement rows) filtered by device and
+  start time, ``load_run`` one complete run, ``compare_runs`` two runs side by side, and
+  ``export_run`` writes one run to a new JSON file. All are read-only on the database
+  and validate run IDs as canonical UUIDs before opening it.
 """
+import json
 import math
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, BinaryIO, Dict, Iterator, List, Optional, Tuple, Union
 
 SCHEMA_VERSION = 1
 APPLICATION_ID = 0x414D4D52  # "AMMR": identifies this archive format in the SQLite header
 DEFAULT_LOCK_TIMEOUT_SECONDS = 5.0
+DEFAULT_LIST_LIMIT = 20
+MAX_LIST_LIMIT = 1000
 # SQLite stores INTEGER values as signed 64-bit integers; sqlite3 raises OverflowError
 # (not a sqlite3.Error) for a larger Python int, so integers are range-checked first.
 SQLITE_INTEGER_MIN = -2**63
@@ -213,6 +224,10 @@ class ArchiveIntegrityError(ArchiveError):
     """The database rejected the data, or an archived run's rows are inconsistent."""
 
 
+class ExportError(ArchiveError):
+    """A run could not be exported (destination exists, directory missing, or write failed)."""
+
+
 class ResultArchiveError(ArchiveError):
     """A run completed but could not be archived. ``result`` holds the complete in-memory result."""
 
@@ -329,7 +344,8 @@ def _text(name: str, value, *, nullable: bool = False) -> Optional[str]:
     return value
 
 
-def _run_id(value) -> str:
+def validate_run_id(value) -> str:
+    """Return ``value`` if it is a run ID in canonical lowercase UUID form, else raise ValueError."""
     try:
         canonical = str(uuid.UUID(value))
     except (TypeError, ValueError, AttributeError) as exc:
@@ -352,7 +368,7 @@ def _utc_text(name: str, value) -> str:
 def _rows_from_result(result: Dict[str, Any]):
     """Validate a run_test() result and convert it to (run row, measurement rows, statistics row)."""
     try:
-        run_id = _run_id(result["run_id"])
+        run_id = validate_run_id(result["run_id"])
         settings, counts = result["settings"], result["counts"]
         attempts, analysis = result["attempts"], result["analysis"]
 
@@ -540,26 +556,22 @@ class ResultArchive:
         finally:
             conn.close()
 
-    def load_run(self, run_id: str) -> Dict[str, Any]:
-        """Load one run and rebuild its run_test() result. Never creates or modifies the file."""
-        if not isinstance(run_id, str):
-            raise ValueError(f"run_id must be a string, got {run_id!r}")
+    @contextmanager
+    def _reading(self) -> Iterator[sqlite3.Connection]:
+        """A read-only connection in one snapshot, after the identity and schema checks.
+
+        Never creates a missing file. sqlite3 errors become ArchiveError subclasses, and the
+        connection is always closed.
+        """
         if not self.path.is_file():
             raise ArchiveNotFoundError(f"archive {self.path} does not exist")
-
         conn = _connect(self.path, "ro", self.lock_timeout_s)
         conn.row_factory = sqlite3.Row
         try:
             try:
-                conn.execute("BEGIN")  # one consistent snapshot for the three queries
+                conn.execute("BEGIN")  # one consistent snapshot for all queries of the operation
                 _check_identity(conn, self.path)
-                run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-                if run is None:
-                    raise RunNotFoundError(f"run {run_id} is not archived in {self.path}")
-                measurements = conn.execute(
-                    "SELECT * FROM measurements WHERE run_id = ? ORDER BY attempt", (run_id,)).fetchall()
-                stats = conn.execute("SELECT * FROM run_statistics WHERE run_id = ?", (run_id,)).fetchone()
-                return _result_from_rows(run, measurements, stats, self.path)
+                yield conn
             finally:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
@@ -567,3 +579,183 @@ class ResultArchive:
             raise _translate(exc, self.path) from exc
         finally:
             conn.close()
+
+    def load_run(self, run_id: str) -> Dict[str, Any]:
+        """Load one run and rebuild its run_test() result. Never creates or modifies the file.
+
+        ``run_id`` must be a canonical UUID (ValueError otherwise, before the file is opened).
+        """
+        validate_run_id(run_id)
+        with self._reading() as conn:
+            run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RunNotFoundError(f"run {run_id} is not archived in {self.path}")
+            measurements = conn.execute(
+                "SELECT * FROM measurements WHERE run_id = ? ORDER BY attempt", (run_id,)).fetchall()
+            stats = conn.execute("SELECT * FROM run_statistics WHERE run_id = ?", (run_id,)).fetchone()
+            return _result_from_rows(run, measurements, stats, self.path)
+
+    def list_runs(self, *, ammeter: Optional[str] = None, since: Optional[datetime] = None,
+                  until: Optional[datetime] = None, limit: int = DEFAULT_LIST_LIMIT) -> List[Dict[str, Any]]:
+        """Summaries of archived runs, newest start time first (ties: run_id, descending).
+
+        - ``ammeter``: exact, case-sensitive device name (no wildcards).
+        - ``since`` (inclusive) and ``until`` (exclusive): timezone-aware datetimes compared
+          with each run's start time; they are converted to UTC first.
+        - ``limit``: 1 to MAX_LIST_LIMIT runs.
+
+        Measurement rows are not read. A run without a statistics row raises
+        ArchiveIntegrityError rather than being left out.
+        """
+        if ammeter is not None and (not isinstance(ammeter, str) or not ammeter):
+            raise ValueError(f"ammeter must be a non-empty string, got {ammeter!r}")
+        bounds = {name: None if value is None else _utc_bound(name, value)
+                  for name, value in (("since", since), ("until", until))}
+        if bounds["since"] is not None and bounds["until"] is not None and bounds["since"] >= bounds["until"]:
+            raise ValueError(f"since ({bounds['since']}) must be earlier than until ({bounds['until']})")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
+            raise ValueError(f"limit must be a whole number from 1 to {MAX_LIST_LIMIT}, got {limit!r}")
+
+        conditions, parameters = [], []
+        if ammeter is not None:
+            conditions.append("r.ammeter = ?")
+            parameters.append(ammeter)
+        if bounds["since"] is not None:
+            conditions.append("r.started_at_utc >= ?")
+            parameters.append(bounds["since"])
+        if bounds["until"] is not None:
+            conditions.append("r.started_at_utc < ?")
+            parameters.append(bounds["until"])
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # LEFT JOIN, so a run whose statistics row is missing is detected instead of dropped.
+        sql = (
+            "SELECT r.run_id, r.ammeter, r.started_at_utc, r.ended_at_utc, r.attempted, r.succeeded, "
+            "r.failed, r.skipped_slots, r.stop_reason, s.run_id AS statistics_run_id, s.status, s.mean_a "
+            f"FROM runs AS r LEFT JOIN run_statistics AS s ON s.run_id = r.run_id {where} "
+            "ORDER BY r.started_at_utc DESC, r.run_id DESC LIMIT ?"
+        )
+        with self._reading() as conn:
+            rows = conn.execute(sql, (*parameters, limit)).fetchall()
+
+        missing = [row["run_id"] for row in rows if row["statistics_run_id"] is None]
+        if missing:
+            raise ArchiveIntegrityError(
+                f"archived run(s) in {self.path} have no run_statistics row: {', '.join(missing)}")
+        return [{
+            "run_id": row["run_id"],
+            "ammeter": row["ammeter"],
+            "started_at_utc": row["started_at_utc"],
+            "ended_at_utc": row["ended_at_utc"],
+            "counts": {key: row[key] for key in ("attempted", "succeeded", "failed", "skipped_slots")},
+            "stop_reason": row["stop_reason"],
+            "analysis_status": row["status"],
+            "mean_a": row["mean_a"],
+        } for row in rows]
+
+    def compare_runs(self, run_id_a: str, run_id_b: str) -> Dict[str, Any]:
+        """Load two runs and compare them side by side (see compare_results)."""
+        validate_run_id(run_id_a)
+        validate_run_id(run_id_b)
+        return compare_results(self.load_run(run_id_a), self.load_run(run_id_b))
+
+    def export_run(self, run_id: str, output_path: Union[str, Path]) -> Path:
+        """Write one complete run as UTF-8 JSON to a new file and return its path.
+
+        The JSON is produced before the file is created. An existing file is never
+        overwritten (or removed), and the directory must already exist. If writing fails,
+        the partly written new file is removed and ExportError is raised. If the process is
+        killed while writing, a partial file can remain; there is no atomic publication.
+        """
+        output = Path(output_path)
+        validate_run_id(run_id)
+        data = (json.dumps(self.load_run(run_id), indent=2, ensure_ascii=False, allow_nan=False)
+                + "\n").encode("utf-8")
+        if not output.parent.is_dir():
+            raise ExportError(f"output directory {output.parent} does not exist")
+        try:
+            stream = _create_exclusive(output)
+        except FileExistsError as exc:
+            raise ExportError(f"{output} already exists; it was not overwritten") from exc
+        except OSError as exc:
+            raise ExportError(f"cannot create {output}: {exc}") from exc
+        # From here on the file is ours, so it may be removed if the write fails.
+        try:
+            with stream:
+                stream.write(data)
+        except BaseException as exc:
+            cleanup_error: Optional[OSError] = None
+            try:
+                output.unlink()
+            except OSError as unlink_error:
+                cleanup_error = unlink_error
+                exc.add_note(f"the partial file {output} could not be removed: {unlink_error!r}")
+            if isinstance(exc, OSError):
+                if cleanup_error is None:
+                    message = f"writing {output} failed; the partial file was removed: {exc}"
+                else:
+                    message = (f"writing {output} failed: {exc}; the partial file {output} could NOT be "
+                               f"removed ({cleanup_error}); delete it manually")
+                raise ExportError(message) from exc
+            raise
+        return output
+
+
+def _create_exclusive(path: Path) -> BinaryIO:
+    """Create ``path`` for writing; FileExistsError if it already exists (never truncates)."""
+    return open(path, "xb")
+
+
+def _utc_bound(name: str, value) -> str:
+    if not isinstance(value, datetime):
+        raise ValueError(f"{name} must be a datetime, got {value!r}")
+    try:
+        return utc_timestamp(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be timezone-aware, got {value!r}") from exc
+
+
+# --- Comparison --------------------------------------------------------------------
+
+_RUN_CONTEXT_KEYS = ("ammeter", "host", "port", "command")
+
+
+def compare_results(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    """Compare two run_test() results side by side, without the attempt lists.
+
+    ``metrics`` holds each of the five metrics for both runs. ``difference_b_minus_a`` is
+    present only when both values exist and their difference is a finite float; otherwise
+    ``difference_unavailable`` explains why. ``context_differences`` lists the device and
+    settings fields that differ: context for reading the numbers, not a reason to refuse the
+    comparison. No ranking or pass/fail judgement is made.
+    """
+    def summary(result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "run_id": result["run_id"],
+            **{key: result[key] for key in _RUN_CONTEXT_KEYS},
+            "started_at_utc": result["started_at_utc"],
+            "settings": result["settings"],
+            "counts": result["counts"],
+            "stop_reason": result["stop_reason"],
+            "analysis_status": result["analysis"]["status"],
+        }
+
+    differences = [key for key in _RUN_CONTEXT_KEYS if a[key] != b[key]]
+    differences += [f"settings.{key}" for key in a["settings"] if a["settings"][key] != b["settings"].get(key)]
+
+    metrics = {}
+    for key in _METRICS:
+        value_a, value_b = a["analysis"][key], b["analysis"][key]
+        entry: Dict[str, Any] = {"a": value_a, "b": value_b}
+        if value_a is None or value_b is None:
+            missing = [f"run {label} (analysis status {result['analysis']['status']!r})"
+                       for label, result, value in (("a", a, value_a), ("b", b, value_b)) if value is None]
+            entry["difference_unavailable"] = f"no value for {' and '.join(missing)}"
+        else:
+            difference = value_b - value_a
+            if math.isfinite(difference):
+                entry["difference_b_minus_a"] = difference
+            else:
+                entry["difference_unavailable"] = "b - a is too large to represent as a finite float"
+        metrics[key] = entry
+
+    return {"run_a": summary(a), "run_b": summary(b), "context_differences": differences, "metrics": metrics}
