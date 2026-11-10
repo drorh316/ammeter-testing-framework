@@ -13,13 +13,13 @@ On top of the emulators it adds a testing framework:
 **Requirements**
 - **Python 3.11.** The code needs at least 3.11, because it uses 3.11 features such as exception notes and `sqlite3` error names. Only Python 3.11 has been tested (see below); later versions have not been tested.
 - **PyYAML** is the only third-party runtime dependency, and **pytest** is used for the tests (see [Development Setup and Tests](#development-setup-and-tests)). `main.py` itself needs only the standard library.
-- **Tested platforms:** the full test suite, `main.py`, the sampling demo and a separate-process check of the archive pass on:
+- **Tested platforms:** the full test suite, `main.py`, the sampling demo, a separate-process check of the archive, the fault-simulation demo and the synthetic accuracy demo pass on:
   - GitHub Actions `windows-latest`: Windows Server 2025 (10.0.26100), Python 3.11.9;
   - GitHub Actions `ubuntu-latest`: Ubuntu 26.04.1 LTS, Python 3.11.18;
   - GitHub Actions `macos-latest`: macOS 26.7.2 on Apple silicon (arm64), Python 3.11.9;
   - locally: Windows 10 (build 19045), Python 3.11.3.
 
-  The CI runs use the workflow in `.github/workflows/ci.yml` ([passing run](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42576548988)). Other operating system versions, architectures and Python versions have not been tested.
+  The CI runs use the workflow in `.github/workflows/ci.yml` ([passing run on `main`](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42790006476), all steps). Other operating system versions, architectures and Python versions have not been tested.
 
 **Quick start** (Windows PowerShell, from the project root; Linux/macOS equivalents are in each section):
 ```powershell
@@ -29,7 +29,10 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest                     # automated tests
 .\.venv\Scripts\python.exe -m examples.run_tests         # sample every ammeter and archive the runs
 .\.venv\Scripts\python.exe -m src.archive_cli list       # query the archive
+.\.venv\Scripts\python.exe -m examples.fault_simulation  # injected faults and recovery (optional bonus)
+.\.venv\Scripts\python.exe -m examples.accuracy_demo     # accuracy metrics on synthetic data (optional bonus)
 ```
+Run IDs for `show`, `compare`, `export`, `performance`, `plot` and `accuracy` come from `list`. See [Querying the archive](#querying-the-archive-command-line) for every command.
 
 **Further documentation**
 - [docs/design.md](docs/design.md): design decisions, data flow, storage, error handling, testing strategy, tradeoffs and the status of the bonus challenges.
@@ -137,7 +140,7 @@ Use `null` to leave out a limit. The configuration file is found relative to the
 - `duration_reached`: the duration limit prevents any further attempt. No request starts at or after the end of the window, and the run returns as soon as the next target is at or after the end, without sleeping until then. So the elapsed time can be less than the duration (or slightly more, if the last request ran close to the end). A valid run can also end with zero attempts if it is delayed past the end of the window before the first request.
 - The window is [0, D): with the first sample at 0, the targets are those below D. For example, D = 1.2 s at 2 Hz gives targets 0, 0.5 and 1.0 s (three attempts, not 2.4); D = 1.0 s gives 0 and 0.5 s.
 
-**Timing precision** depends on the operating system and its load; it is not guaranteed. In the passing CI run (10 attempts per ammeter at 5 Hz, no failed attempts and no skipped slots on any system), the start of each request was at most 0.6 ms late on the Windows runner and 0.14 ms on the Ubuntu runner, but up to 85 ms late on the macOS runner (median 56 ms). These measurements come from shared virtual machines and show that correct results do not imply precise timing. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
+**Timing precision** depends on the operating system and its load; it is not guaranteed. In one passing CI run ([run 42576548988](https://github.com/drorh316/ammeter-testing-framework/actions/runs/42576548988); 10 attempts per ammeter at 5 Hz, no failed attempts and no skipped slots on any system), the start of each request was at most 0.6 ms late on the Windows runner and 0.14 ms on the Ubuntu runner, but up to 85 ms late on the macOS runner (median 56 ms). These measurements come from shared virtual machines and show that correct results do not imply precise timing. Every attempt records its scheduled and actual start, so the actual timing can be checked. The scheduler uses `time.perf_counter`, which is monotonic like `time.monotonic` but finer-grained on some platforms: on the development Windows machine, `time.monotonic` advanced in steps of 15.625 ms, which made the recorded offsets and durations coarse.
 
 **Result** (a JSON-compatible `dict`): `run_id` (a UUID4), `ammeter`, `host`, `port`, `command`, `started_at_utc` and `ended_at_utc` (wall-clock UTC, `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`; durations come from the monotonic `elapsed_s`), the effective `settings`, `counts` (`attempted`, `succeeded`, `failed`, `skipped_slots`), `elapsed_s`, `stop_reason`, `attempts` (one record per attempt, below), and `analysis` (see [Analysis](#analysis)):
 
@@ -220,7 +223,7 @@ Numeric columns must hold finite numbers of the right type. Integers must fit SQ
 
 ### Querying the archive (command line)
 
-`src/archive_cli.py` lists, shows, compares and exports archived runs, and reports their performance consistency. Run it from the project root (so that `-m src.archive_cli` is found), with the virtual environment's Python:
+`src/archive_cli.py` lists, shows, compares and exports archived runs, reports their performance consistency, writes HTML reports and assesses accuracy against a reference you supply. It only reads the database. Run it from the project root (so that `-m src.archive_cli` is found), with the virtual environment's Python:
 
 ```
 python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
@@ -234,6 +237,7 @@ python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 | `export RUN_ID OUTPUT_PATH` | Writes the complete run to a new UTF-8 JSON file. |
 | `performance RUN_ID [--max-start-lateness SECONDS] [--max-failure-rate RATE] [--max-skipped-slot-rate RATE]` | The run's [performance consistency report](#performance-consistency-report) as JSON, with optional limits. |
 | `plot RUN_ID OUTPUT_PATH [limits]` | Writes a self-contained [HTML report with charts](#html-run-report-with-charts) to a new file. |
+| `accuracy RUN_ID --reference-a AMPERES --reference-source TEXT` | Bias, mean absolute error, RMSE and spread of the successful readings against a [reference you supply](#accuracy-against-a-known-reference), as JSON. |
 
 **Which database.** `--db` and `--config` are global options and go **before** the command; only one of them can be given.
 - `--db PATH` reads that file; a relative path is resolved against the current working directory. The configuration is not read, so this works whether archiving is enabled, disabled or not configured.
@@ -380,6 +384,7 @@ A separate, explicitly started demonstration of how the real client, sampling, a
 ```powershell
 .\.venv\Scripts\python.exe -m examples.fault_simulation [--db PATH] [--output-dir DIR]
 ```
+(Linux / macOS: `.venv/bin/python -m examples.fault_simulation`.)
 
 - **Server:** `FaultSimulationServer` (`src/testing/fault_server.py`) listens on `127.0.0.1` on a port chosen by the operating system. Successful replies use the real Greenlee emulator logic (`get_current_command` and `measure_current()`), encoded as the emulators do.
 - **Run:** a temporary configuration points `AmmeterTestFramework` at that port: 5 attempts at 2 Hz, 1 s request timeout, archiving on. The run goes through the normal `run_test`, real TCP client, analysis and SQLite save, then is reloaded through a new connection and compared.
