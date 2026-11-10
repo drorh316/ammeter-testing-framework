@@ -6,7 +6,8 @@ On top of the emulators it adds a testing framework:
 - one client call for all three ammeter types;
 - configurable sampling by count, duration and frequency;
 - statistics for each run (mean, median, standard deviation, minimum, maximum);
-- a SQLite archive of runs, with a command-line tool to list, show, compare and export them.
+- a SQLite archive of runs, with a command-line tool to list, show, compare and export them;
+- a separate [fault-simulation demo](#fault-simulation-demo) that runs the real client and sampling loop against a local server injecting planned faults.
 
 **Requirements**
 - **Python 3.11.** The code needs at least 3.11, because it uses 3.11 features such as exception notes and `sqlite3` error names. Only Python 3.11 has been tested (see below); later versions have not been tested.
@@ -31,7 +32,7 @@ python -m venv .venv
 
 **Further documentation**
 - [docs/design.md](docs/design.md): design decisions, data flow, storage, error handling, testing strategy, tradeoffs and the status of the bonus challenges.
-- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type.
+- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type, and one labelled fault-simulation run.
 - [Known limitations](#known-limitations) and [Fixes to the Supplied Code](#fixes-to-the-supplied-code).
 
 ## Project Structure
@@ -47,6 +48,7 @@ python -m venv .venv
   - `config.yaml`: Sampling settings and the ammeters (host, port, command) to sample.
 - `examples/`
   - `run_tests.py`: Sampling demo: starts the emulators and samples every configured ammeter (replaces the broken supplied placeholder).
+  - `fault_simulation.py`: Fault-simulation demo: samples a local fault-injecting server and checks the planned outcomes.
 - `src/`
   - `archive_cli.py`: Command-line interface to the archive: `list`, `show`, `compare`, `export`.
   - `testing/`
@@ -54,6 +56,8 @@ python -m venv .venv
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
     - `performance.py`: `build_performance_report`: timing and failure consistency of one run, with optional user-defined limits.
     - `visualization.py`: `render_run_report`: self-contained HTML report with SVG charts for one run.
+    - `fault_scenario.py`: Fault-simulation scenario, device identity, expected-vs-observed comparison and scenario record (pure logic).
+    - `fault_server.py`: `FaultSimulationServer`: loopback TCP server that injects one planned fault per connection.
     - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load, list, compare, export).
     - `test_framework.py`: `AmmeterTestFramework`: loads and validates the configuration; `run_test(ammeter_type)` samples one ammeter.
   - `utils/`
@@ -68,6 +72,8 @@ python -m venv .venv
   - `test_performance.py`: Performance report and `performance` command tests.
   - `test_visualization.py`: HTML/SVG report and `plot` command tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
+  - `test_fault_scenario.py`: Fault-simulation logic, report and sample tests (no sockets, no real time).
+  - `test_fault_server.py`: Fault server and fault-simulation demo over real loopback TCP on temporary ports.
   - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
   - `test_archive.py`: SQLite archive integration tests on real temporary database files.
   - `test_archive_queries.py`: Listing, filtering, comparison and export tests (real temporary archives).
@@ -76,7 +82,7 @@ python -m venv .venv
   - `conftest.py`: Stops any test from writing to the shipped results database.
 - `docs/`
   - `design.md`: Design decisions (see above).
-- `sample_results/`: Three runs exported from the demo archive, one per ammeter type (see its README).
+- `sample_results/`: Three runs exported from the demo archive, one per ammeter type, and one labelled fault-simulation run (see its README).
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
 - `requirements-dev.txt`: Development dependencies (runtime dependencies plus pytest).
@@ -359,6 +365,39 @@ A note at the top states that the values are random emulator readings and do not
 
 Example: [`sample_results/greenlee_report.html`](sample_results/README.md#html-report).
 
+Fault-simulation runs (device names starting `fault-sim:`) get a different note: the failures were injected on purpose and the successful readings come from the emulator's random-value logic. `plot` shows the scenario identity stored in the device name, but not a verdict, because the expected outcomes are in the run's scenario record, not in the database (see the next section).
+
+### Fault-simulation demo
+
+A separate, explicitly started demonstration of how the real client, sampling, analysis and archive behave when a server misbehaves.
+- **Reused, not changed:** the existing client, `AmmeterTestFramework`, sampling, analysis and archive code, the Greenlee emulator's measurement logic, and the `check_archived` helper from `examples/run_tests.py`.
+- **Not started:** `main.py`, the normal sampling demo's entry point, and the supplied emulator servers (ports 5001–5003). Nothing in them changes, and the archive schema is unchanged.
+
+```powershell
+.\.venv\Scripts\python.exe -m examples.fault_simulation [--db PATH] [--output-dir DIR]
+```
+
+- **Server:** `FaultSimulationServer` (`src/testing/fault_server.py`) listens on `127.0.0.1` on a port chosen by the operating system. Successful replies use the real Greenlee emulator logic (`get_current_command` and `measure_current()`), encoded as the emulators do.
+- **Run:** a temporary configuration points `AmmeterTestFramework` at that port: 5 attempts at 2 Hz, 1 s request timeout, archiving on. The run goes through the normal `run_test`, real TCP client, analysis and SQLite save, then is reloaded through a new connection and compared.
+- **Scenario `basic-recovery` v1**, one step per TCP connection, numbered in the order the server accepts them:
+
+  | Connection | Server behaviour | Expected client outcome |
+  |---|---|---|
+  | 1 | real Greenlee reading | success |
+  | 2 | replies `12.3.4` | `InvalidMeasurementError` ("response is not a number") |
+  | 3 | reads the command, then closes the connection normally without replying | `InvalidMeasurementError` ("empty response") |
+  | 4 | holds the reply for 3 s, longer than the 1 s timeout | `AmmeterTimeoutError` |
+  | 5 | real Greenlee reading | success: recovery without retries |
+
+  Step 3 is an orderly close (FIN), not a TCP reset. The order of outcomes is repeatable; the current values, timings and the number of skipped slots (attempt 4 occupies its slot for a full second) vary between runs.
+- **Bounded lifecycle:** each connection has its own handler thread, so the delayed reply does not hold up connection 5. The server reads the command across partial TCP reads, never more than its length, within 2 s; replies are written with a 2 s timeout; the delay waits on a stop event. Cleanup stops the accepting thread and all handlers and closes every socket against one 5 s deadline, and reports success only if all of them actually stopped and closed. Readiness is an event set by the accepting thread, not a probe connection.
+- **Identity without a schema change:** the run is archived under the device name `fault-sim:greenlee:basic-recovery:v1` (emulator, scenario ID and version), so `list --ammeter fault-sim:greenlee:basic-recovery:v1` finds such runs. That name identifies the scenario, not one run. The link to a run is the scenario record `<run_id>.scenario.json`, which holds the exact run ID and device, the scenario and its settings (sampling and server), the server's connection log, any server errors, the cleanup evidence, the expected-vs-observed comparison and the verdict. A separate annotations table was not added because it would need schema version 2 and migration code.
+- **Outputs:** `<run_id>.scenario.json` and `<run_id>.html` (the run report with a "Fault-simulation scenario" section; the report rejects, with a `ValueError`, a record that does not belong to the run or is inconsistent: a different run ID or device, a scenario ID, version or emulator that differs from the device name, a top-level verdict that differs from the comparison's or contradicts its problems, malformed rows, rows that differ from the scenario's steps, or recorded outcomes that differ from the run's attempts). Defaults: archive `results/fault_simulation.sqlite3` (kept apart from the normal archive) and directory `results/fault_simulation/`, both under the project root. Explicit relative `--db` and `--output-dir` paths are resolved against the current working directory. Files are never overwritten.
+- **Not one transaction:** the run is saved first; the two files are written afterwards. If writing a file fails, the run stays saved, and the error names the run ID and any file already written.
+- **Exit codes:** 0 only if every planned step matched on both the client and the server side (correct command, planned fault, reply sent or not as planned), there were no extra attempts or connections, no server errors, cleanup completed, the final attempt recovered, the run was saved and reloaded unchanged, and both files were written. The three injected failures are expected and do not cause a non-zero exit. 1 otherwise; 2 for invalid usage.
+
+Example: [`sample_results/fault_simulation_*`](sample_results/README.md#fault-simulation-run).
+
 ### Client behaviour
 
 `request_current_from_ammeter(port, command, timeout=5.0, host="127.0.0.1", max_response_bytes=1024)` in `Ammeters/client.py`:
@@ -392,7 +431,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-Most unit tests replace the socket, clock, sleep and client with fakes, so the suite runs in a few seconds without starting the emulators on their ports, sending network requests or really sleeping. The emulator tests in `tests/test_emulators.py` are the exception: they start short-lived threads. One of them, the startup regression test, uses a real loopback socket on a temporary port chosen by the operating system (not 5001–5003) to check that an emulator whose port is in use is reported as stopped. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
+Most unit tests replace the socket, clock, sleep and client with fakes, so the suite runs in a few seconds without starting the emulators on their ports, sending network requests or really sleeping. The emulator tests in `tests/test_emulators.py` are the exception: they start short-lived threads. One of them, the startup regression test, uses a real loopback socket on a temporary port chosen by the operating system (not 5001–5003) to check that an emulator whose port is in use is reported as stopped. `tests/test_fault_server.py` also uses real loopback TCP on temporary ports to exercise the fault server and the fault-simulation demo (about 12 s in total); its only timing assumptions are wide margins, such as a 0.3 s client timeout against a 30 s server delay, and nothing is retried. The archive and CLI tests use real SQLite files in pytest's temporary directories, and one CLI test runs `python -m src.archive_cli` as a separate process; a guard in `tests/conftest.py` fails any test that would open or write the shipped `results/` database.
 
 **Dependency change:** the supplied `requirements.txt` listed numpy, scipy, matplotlib, seaborn, pandas and pyyaml, none of which were used by the code. It now lists only PyYAML, following the "minimize external library dependencies" constraint. Libraries will be added back only if a later feature needs them.
 
@@ -437,7 +476,8 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **Export** is not atomic: a process killed while writing can leave a partial file.
 - **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
 - **Charts:** one run per HTML report (no cross-run dashboard). Markers are not clipped at the edge of the plot area, and the point charts draw at most 2000 attempts (larger runs are downsampled, with a note).
-- **Not implemented** (optional bonuses): runtime error simulation and accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
+- **Fault simulation:** one fixed scenario on the Greenlee logic, run only by its own demo; there is no configurable fault language and nothing is injected into normal runs. Step order relies on the client making exactly one connection per attempt; a deviation shows up as a mismatch and is not retried. The scenario record is a separate file, so `plot` on an archived simulation run shows its identity but not its verdict.
+- **Not implemented** (optional bonus): accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
 - **Platforms:** tested only on the environments listed under [Tested platforms](#ammeter-emulators) (Windows Server 2025, Ubuntu 26.04 and macOS 26 runners with Python 3.11, and Windows 10 locally). On the macOS runner, requests started up to 85 ms after their target time.
 
 ## Fixes to the Supplied Code

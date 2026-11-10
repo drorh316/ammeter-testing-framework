@@ -38,12 +38,20 @@ histogram always use the full run.
 
 Precision: the run data are not changed; only displayed labels are rounded. Every piece of
 text from the run (device name, command, error messages, ...) is HTML-escaped.
+
+Fault-simulation runs (device name ``fault-sim:...``, see ``src/testing/fault_scenario.py``)
+get a different source note: the faults were injected on purpose and the successful readings
+come from the emulator's random-value logic. A scenario record can be passed as ``scenario``;
+it must belong to this run (same run ID and device), and then the expected and observed
+outcomes and the verdict are shown. Without a record, only the identity stored in the
+device name is shown; no verdict or scenario details are invented.
 """
 import bisect
 import html
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from src.testing.fault_scenario import parse_device_name, validate_scenario_record
 from src.testing.performance import PerformanceLimits, build_performance_report
 
 MAX_RENDERED_POINTS = 2000
@@ -367,9 +375,84 @@ def _display(value: Any, unit: str = "", scale: float = 1.0) -> str:
     return f"{value}{unit}"
 
 
+_EMULATOR_NOTE = """<p class="note">These values are readings from the supplied ammeter emulators, which generate random numbers.
+The charts show what was recorded; they do not establish the accuracy of any device.</p>"""
+
+
+def _simulation_note(identity: Dict[str, Any]) -> str:
+    if identity["scenario_id"] is None:
+        source = "a fault-simulation scenario that the device name does not identify"
+        readings = "an emulator's random-value logic"
+    else:
+        source = (f"scenario {_e(identity['scenario_id'])} version {_e(identity['version'])}, "
+                  f"emulator {_e(identity['emulator'])}")
+        readings = f"the {_e(identity['emulator'])} emulator's random-value logic"
+    return (f'<p class="note"><strong>Fault-simulation run</strong> ({source}). A local test server injected '
+            f"the failures on purpose; the successful readings come from {readings}. These data show how the "
+            "client and the sampling loop behaved under planned faults; they do not describe a real device or "
+            "its accuracy.</p>")
+
+
+def _expected_text(expected: Any) -> str:
+    if not isinstance(expected, dict):
+        return "(not planned)"
+    if expected.get("outcome") == "ok":
+        return "success"
+    phrase = expected.get("message_contains")
+    return f"{expected.get('type')}" + (f" (message contains {phrase!r})" if phrase else "")
+
+
+def _observed_text(observed: Any) -> str:
+    if not isinstance(observed, dict):
+        return "(no attempt)"
+    if observed.get("outcome") == "ok":
+        return "success"
+    return f"{observed.get('type')}: {observed.get('message')}"
+
+
+def _scenario_section(run: Dict[str, Any], identity: Optional[Dict[str, Any]],
+                      scenario: Optional[Dict[str, Any]]) -> str:
+    if scenario is None:
+        if identity is None:
+            return ""  # ordinary runs: the report is unchanged
+        return ("\n<h2>Fault-simulation scenario</h2><p>Stored identity: device "
+                f"<code>{_e(run['ammeter'])}</code>. No scenario record was supplied, so the expected outcomes, "
+                "the server log and the verdict are not shown. The fault-simulation demo writes them to "
+                f"<code>{_e(run['run_id'])}.scenario.json</code>.</p>")
+    comparison = scenario["comparison"]
+    rows = "".join(
+        f'<tr><td class="num">{_e(row.get("step"))}</td><td>{_e(row.get("fault"))}</td>'
+        f"<td>{_e(_expected_text(row.get('expected')))}</td><td>{_e(_observed_text(row.get('observed')))}</td>"
+        f"<td>{'match' if row.get('match') else 'MISMATCH'}</td></tr>"
+        for row in comparison["steps"])
+    problems = comparison.get("problems") or []
+    problem_html = ("<p>Problems:</p><ul>" + "".join(f"<li>{_e(p)}</li>" for p in problems) + "</ul>"
+                    if problems else "")
+    info = scenario.get("scenario") if isinstance(scenario.get("scenario"), dict) else {}
+    cleanup = scenario.get("cleanup") if isinstance(scenario.get("cleanup"), dict) else {}
+    return ("\n<h2>Fault-simulation scenario</h2>"
+            f"<p><strong>Verdict: {_e(scenario['verdict'])}</strong>. Scenario {_e(info.get('id'))} version "
+            f"{_e(info.get('version'))}: {_e(info.get('description'))} Recovered after the faults: "
+            f"{_e(comparison.get('recovered'))}. Server cleanup complete: {_e(cleanup.get('complete'))}.</p>"
+            "<table><tr><th>Step</th><th>Injected fault</th><th>Expected</th><th>Observed</th><th>Result</th></tr>"
+            f"{rows}</table>{problem_html}"
+            '<p class="caption">Connection <em>n</em> to the fault server gets step <em>n</em>. The order of '
+            "outcomes is repeatable; the current values and timings vary from run to run. Taken from the scenario "
+            f"record for run {_e(scenario['run_id'])}.</p>")
+
+
 def render_run_report(run: Dict[str, Any], limits: Optional[PerformanceLimits] = None, *,
-                      max_points: int = MAX_RENDERED_POINTS) -> str:
-    """The complete HTML document for ``run`` (see the module documentation)."""
+                      max_points: int = MAX_RENDERED_POINTS, scenario: Optional[Dict[str, Any]] = None) -> str:
+    """The complete HTML document for ``run`` (see the module documentation).
+
+    ``scenario`` is an optional fault-simulation scenario record; ValueError if it does not
+    belong to ``run``.
+    """
+    if scenario is not None:
+        validate_scenario_record(scenario, run)
+    identity = parse_device_name(run["ammeter"])
+    note = _EMULATOR_NOTE if identity is None else _simulation_note(identity)
+    kind = "Ammeter run" if identity is None else "Fault-simulation run"
     performance = build_performance_report(run, limits)
     attempts = run["attempts"]
     selection = select_points(attempts, max_points)
@@ -445,15 +528,14 @@ def render_run_report(run: Dict[str, Any], limits: Optional[PerformanceLimits] =
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ammeter run {_e(run["run_id"])}</title>
+<title>{kind} {_e(run["run_id"])}</title>
 <style>{_CSS}</style>
 </head>
 <body>
 <main>
-<h1>Ammeter run report: {_e(run["ammeter"])}</h1>
+<h1>{kind} report: {_e(run["ammeter"])}</h1>
 <p class="sub">Run {_e(run["run_id"])}, started {_e(run["started_at_utc"])}</p>
-<p class="note">These values are readings from the supplied ammeter emulators, which generate random numbers.
-The charts show what was recorded; they do not establish the accuracy of any device.</p>
+{note}{_scenario_section(run, identity, scenario)}
 
 <h2>Run</h2>
 {_table(run_rows)}

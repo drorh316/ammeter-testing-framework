@@ -1,0 +1,250 @@
+{
+  "record_type": "ammeter-fault-simulation",
+  "format_version": 1,
+  "run_id": "209420e5-53e9-4771-b1a2-8a6f4060927a",
+  "device": "fault-sim:greenlee:basic-recovery:v1",
+  "scenario": {
+    "id": "basic-recovery",
+    "version": 1,
+    "emulator": "greenlee",
+    "description": "One success, three different faults, then a success that shows the client and the sampling loop recover without retries.",
+    "steps": [
+      {
+        "connection": 1,
+        "fault": "ok",
+        "description": "real Greenlee reading",
+        "expected": {
+          "outcome": "ok"
+        }
+      },
+      {
+        "connection": 2,
+        "fault": "malformed",
+        "description": "reply '12.3.4', which is not a number",
+        "expected": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message_contains": "response is not a number"
+        }
+      },
+      {
+        "connection": 3,
+        "fault": "close_without_response",
+        "description": "orderly close (FIN) after reading the command, without a reply; not a TCP reset",
+        "expected": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message_contains": "empty response"
+        }
+      },
+      {
+        "connection": 4,
+        "fault": "delay",
+        "description": "hold the reply longer than the client's timeout",
+        "expected": {
+          "outcome": "error",
+          "type": "AmmeterTimeoutError",
+          "message_contains": null
+        }
+      },
+      {
+        "connection": 5,
+        "fault": "ok",
+        "description": "real Greenlee reading (recovery)",
+        "expected": {
+          "outcome": "ok"
+        }
+      }
+    ]
+  },
+  "settings": {
+    "sampling": {
+      "sampling_frequency_hz": 2.0,
+      "measurements_count": 5,
+      "total_duration_seconds": null,
+      "request_timeout_seconds": 1.0
+    },
+    "server": {
+      "host": "127.0.0.1",
+      "port": 65307,
+      "command": "MEASURE_GREENLEE -get_measurement",
+      "delay_s": 3.0,
+      "command_timeout_s": 2.0,
+      "write_timeout_s": 2.0,
+      "cleanup_timeout_s": 5.0
+    }
+  },
+  "connections": [
+    {
+      "connection": 1,
+      "fault": "ok",
+      "command": "ok",
+      "reply_sent": true,
+      "delay_interrupted": null,
+      "finished": true,
+      "socket_closed": true,
+      "error": null
+    },
+    {
+      "connection": 2,
+      "fault": "malformed",
+      "command": "ok",
+      "reply_sent": true,
+      "delay_interrupted": null,
+      "finished": true,
+      "socket_closed": true,
+      "error": null
+    },
+    {
+      "connection": 3,
+      "fault": "close_without_response",
+      "command": "ok",
+      "reply_sent": false,
+      "delay_interrupted": null,
+      "finished": true,
+      "socket_closed": true,
+      "error": null
+    },
+    {
+      "connection": 4,
+      "fault": "delay",
+      "command": "ok",
+      "reply_sent": false,
+      "delay_interrupted": true,
+      "finished": true,
+      "socket_closed": true,
+      "error": null
+    },
+    {
+      "connection": 5,
+      "fault": "ok",
+      "command": "ok",
+      "reply_sent": true,
+      "delay_interrupted": null,
+      "finished": true,
+      "socket_closed": true,
+      "error": null
+    }
+  ],
+  "server_errors": [],
+  "cleanup": {
+    "complete": true,
+    "accept_thread_stopped": true,
+    "listener_closed": true,
+    "handlers": 5,
+    "handlers_stopped": 5,
+    "connection_sockets": 5,
+    "connection_sockets_closed": 5,
+    "elapsed_s": 0.030999999959021807
+  },
+  "comparison": {
+    "steps": [
+      {
+        "step": 1,
+        "fault": "ok",
+        "expected": {
+          "outcome": "ok"
+        },
+        "observed": {
+          "outcome": "ok"
+        },
+        "server": {
+          "fault": "ok",
+          "command": "ok",
+          "reply_sent": true,
+          "delay_interrupted": null
+        },
+        "match": true,
+        "problems": []
+      },
+      {
+        "step": 2,
+        "fault": "malformed",
+        "expected": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message_contains": "response is not a number"
+        },
+        "observed": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message": "Ammeter on port 65307: response is not a number: '12.3.4'"
+        },
+        "server": {
+          "fault": "malformed",
+          "command": "ok",
+          "reply_sent": true,
+          "delay_interrupted": null
+        },
+        "match": true,
+        "problems": []
+      },
+      {
+        "step": 3,
+        "fault": "close_without_response",
+        "expected": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message_contains": "empty response"
+        },
+        "observed": {
+          "outcome": "error",
+          "type": "InvalidMeasurementError",
+          "message": "Ammeter on port 65307: empty response (command may not be recognised)"
+        },
+        "server": {
+          "fault": "close_without_response",
+          "command": "ok",
+          "reply_sent": false,
+          "delay_interrupted": null
+        },
+        "match": true,
+        "problems": []
+      },
+      {
+        "step": 4,
+        "fault": "delay",
+        "expected": {
+          "outcome": "error",
+          "type": "AmmeterTimeoutError",
+          "message_contains": null
+        },
+        "observed": {
+          "outcome": "error",
+          "type": "AmmeterTimeoutError",
+          "message": "Ammeter on port 65307: request did not complete within the 1.0 s timeout budget (timed out)"
+        },
+        "server": {
+          "fault": "delay",
+          "command": "ok",
+          "reply_sent": false,
+          "delay_interrupted": true
+        },
+        "match": true,
+        "problems": []
+      },
+      {
+        "step": 5,
+        "fault": "ok",
+        "expected": {
+          "outcome": "ok"
+        },
+        "observed": {
+          "outcome": "ok"
+        },
+        "server": {
+          "fault": "ok",
+          "command": "ok",
+          "reply_sent": true,
+          "delay_interrupted": null
+        },
+        "match": true,
+        "problems": []
+      }
+    ],
+    "recovered": true,
+    "problems": [],
+    "verdict": "pass"
+  },
+  "verdict": "pass"
+}
