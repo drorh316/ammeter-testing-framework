@@ -1,0 +1,103 @@
+{
+  "run_id": "209420e5-53e9-4771-b1a2-8a6f4060927a",
+  "ammeter": "fault-sim:greenlee:basic-recovery:v1",
+  "host": "127.0.0.1",
+  "port": 65307,
+  "command": "MEASURE_GREENLEE -get_measurement",
+  "started_at_utc": "2026-11-10T08:05:39.032004+00:00",
+  "ended_at_utc": "2026-11-10T08:05:42.033684+00:00",
+  "settings": {
+    "sampling_frequency_hz": 2.0,
+    "measurements_count": 5,
+    "total_duration_seconds": null,
+    "request_timeout_seconds": 1.0
+  },
+  "counts": {
+    "attempted": 5,
+    "succeeded": 2,
+    "failed": 3,
+    "skipped_slots": 2
+  },
+  "elapsed_s": 3.0014407999115065,
+  "stop_reason": "count_reached",
+  "attempts": [
+    {
+      "attempt": 1,
+      "slot": 0,
+      "scheduled_offset_s": 0.0,
+      "start_offset_s": 4.199915565550327e-06,
+      "lateness_s": 4.199915565550327e-06,
+      "elapsed_s": 0.0007239000406116247,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.538595664211125
+    },
+    {
+      "attempt": 2,
+      "slot": 1,
+      "scheduled_offset_s": 0.5,
+      "start_offset_s": 0.5001500999787822,
+      "lateness_s": 0.00015009997878223658,
+      "elapsed_s": 0.02436649997252971,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": false,
+      "error": {
+        "type": "InvalidMeasurementError",
+        "message": "Ammeter on port 65307: response is not a number: '12.3.4'"
+      }
+    },
+    {
+      "attempt": 3,
+      "slot": 2,
+      "scheduled_offset_s": 1.0,
+      "start_offset_s": 1.0004596000071615,
+      "lateness_s": 0.00045960000716149807,
+      "elapsed_s": 0.02129369997419417,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": false,
+      "error": {
+        "type": "InvalidMeasurementError",
+        "message": "Ammeter on port 65307: empty response (command may not be recognised)"
+      }
+    },
+    {
+      "attempt": 4,
+      "slot": 3,
+      "scheduled_offset_s": 1.5,
+      "start_offset_s": 1.5005050000036135,
+      "lateness_s": 0.0005050000036135316,
+      "elapsed_s": 1.0150748000014573,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": false,
+      "error": {
+        "type": "AmmeterTimeoutError",
+        "message": "Ammeter on port 65307: request did not complete within the 1.0 s timeout budget (timed out)"
+      }
+    },
+    {
+      "attempt": 5,
+      "slot": 6,
+      "scheduled_offset_s": 3.0,
+      "start_offset_s": 3.000717799994163,
+      "lateness_s": 0.0007177999941632152,
+      "elapsed_s": 0.000712699955329299,
+      "effective_timeout_s": 1.0,
+      "timeout_clipped_by_deadline": false,
+      "ok": true,
+      "current_a": 0.10809033928757271
+    }
+  ],
+  "analysis": {
+    "status": "ok",
+    "count": 2,
+    "mean_a": 0.3233430017493489,
+    "median_a": 0.3233430017493489,
+    "stddev_population_a": 0.21525266246177616,
+    "min_a": 0.10809033928757271,
+    "max_a": 0.538595664211125
+  }
+}

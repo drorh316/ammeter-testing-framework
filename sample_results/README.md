@@ -1,6 +1,8 @@
 # Sample results
 
-Three runs exported from a real archive, one per supplied ammeter emulator, and a [performance report](#performance-report) and an [HTML report with charts](#html-report) for one of them:
+Three runs exported from a real archive, one per supplied ammeter emulator, and a [performance report](#performance-report) and an [HTML report with charts](#html-report) for one of them. A separate, clearly labelled [fault-simulation run](#fault-simulation-run) is described at the end.
+
+The three emulator runs:
 
 | File | Ammeter | Run ID | Started (UTC) |
 |---|---|---|---|
@@ -40,5 +42,19 @@ Three runs exported from a real archive, one per supplied ammeter emulator, and 
   ```
 - **Reproducing without the archive:** `tests/test_visualization.py` renders the committed `greenlee_run.json` and checks that the result is identical to this file.
 - **What it shows:** 10 successful readings, no failures, no skipped slots. Start lateness was below 1 ms and request durations were up to about 24 ms. The current values are random emulator output.
+
+## Fault-simulation run
+**Simulation data, not a measurement of any device.** These three files come from one run of the [fault-simulation demo](../README.md#fault-simulation-demo), run `209420e5-53e9-4771-b1a2-8a6f4060927a`, device `fault-sim:greenlee:basic-recovery:v1`:
+
+| File | Content |
+|---|---|
+| `fault_simulation_run.json` | the archived run, exported with `python -m src.archive_cli --db <archive> export 209420e5-53e9-4771-b1a2-8a6f4060927a sample_results/fault_simulation_run.json` |
+| `fault_simulation_scenario.json` | the scenario record the demo wrote as `<run_id>.scenario.json`: scenario, settings, server connection log, cleanup evidence, expected vs. observed outcomes, verdict |
+| `fault_simulation_report.html` | the HTML report the demo wrote as `<run_id>.html`, with the scenario section |
+
+- **Source:** `python -m examples.fault_simulation --db <temporary archive> --output-dir <temporary directory>` on 2026-11-10, Windows 10, Python 3.11.3, on this branch. The scenario record and report were copied under the names above; the archive is not committed.
+- **Outcome:** verdict `pass`. Attempts 1 and 5 succeeded with random Greenlee values; attempt 2 got `InvalidMeasurementError` (not a number: `'12.3.4'`), attempt 3 `InvalidMeasurementError` (empty response, after an orderly close), attempt 4 `AmmeterTimeoutError` after the 1 s timeout. Attempt 4 occupied the schedule for a second, so 2 slots were skipped. The server's delayed reply was interrupted by cleanup and never sent, which is expected. Cleanup stopped 5 of 5 handlers and closed every socket in about 31 ms.
+- **What varies:** the order of outcomes is repeatable, but the current values, the port, the timings and the number of skipped slots differ between runs.
+- **Reproducing without the archive:** `tests/test_fault_scenario.py` checks that the record belongs to the run, recomputes the comparison from the committed data, and re-renders the report from the two JSON files, which must match `fault_simulation_report.html` exactly.
 
 To compare two of these runs, or list them, use the commands in the main [README](../README.md#querying-the-archive-command-line) with a local archive that contains them. The JSON files themselves are standalone and need no database.
