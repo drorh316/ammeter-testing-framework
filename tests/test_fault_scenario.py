@@ -600,3 +600,72 @@ def test_an_extra_unplanned_row_is_accepted_when_consistent():
 def test_the_committed_sample_record_is_still_valid():
     run, record = committed_sample()
     assert validate_scenario_record(record, run) is record
+
+
+# --- A passing verdict needs cleanup, recovery and matching rows ---------------------------------
+
+def _cleanup_incomplete(record):
+    record["cleanup"]["complete"] = False
+
+
+def _not_recovered(record):
+    record["comparison"]["recovered"] = False
+
+
+def _first_row_mismatch(record):
+    record["comparison"]["steps"][0].update(match=False, problems=["unexpected server error"])
+
+
+@pytest.mark.parametrize("corrupt, message", [
+    (_cleanup_incomplete, "the verdict is 'pass' but the record's cleanup did not complete"),
+    (_not_recovered, r"recovered=False, but the run's attempts give recovered=True"),
+    (_first_row_mismatch, r"the verdict is 'pass' but comparison rows \[1\] do not match"),
+])
+def test_a_pass_verdict_contradicted_by_cleanup_recovery_or_rows_is_rejected(corrupt, message):
+    run, record = committed_sample()
+    assert record["verdict"] == "pass"
+    corrupt(record)
+    with pytest.raises(ValueError, match=message):
+        validate_scenario_record(record, run)
+    with pytest.raises(ValueError, match=message):
+        render_run_report(run, scenario=record)
+
+
+def test_a_recovered_flag_the_run_does_not_support_is_rejected_on_a_failing_record():
+    run = sim_run()
+    run["attempts"][4] = {key: value for key, value in run["attempts"][4].items() if key != "current_a"}
+    run["attempts"][4].update(ok=False, error={"type": "X", "message": "y"})
+    record = record_for(run)
+    assert record["comparison"]["recovered"] is False
+    record["comparison"]["recovered"] = True
+    with pytest.raises(ValueError, match="recovered=True, but the run's attempts give recovered=False"):
+        validate_scenario_record(record, run)
+
+
+def test_a_record_failing_only_because_of_an_accept_loop_error_is_accepted():
+    run = sim_run()
+    errors = [{"where": "accept loop", "type": "OSError", "message": "listener failed"}]
+    comparison = compare(attempts=run["attempts"], errors=errors)
+    record = record_for(run, comparison)
+    assert record["verdict"] == "fail" and all(row["match"] for row in record["comparison"]["steps"])
+    assert validate_scenario_record(record, run) is record
+    assert "<strong>Verdict: fail</strong>" in render_run_report(run, scenario=record)
+
+
+def test_a_record_failing_only_because_of_a_handler_error_is_accepted():
+    run = sim_run()
+    connections = expected_connections()
+    connections[0]["error"] = {"type": "OSError", "message": "sensor read failed"}
+    errors = [{"where": "connection 1", "type": "OSError", "message": "sensor read failed"}]
+    record = record_for(run, compare(attempts=run["attempts"], connections=connections, errors=errors))
+    assert record["verdict"] == "fail" and not record["comparison"]["steps"][0]["match"]
+    assert record["comparison"]["recovered"] is True
+    assert validate_scenario_record(record, run) is record
+
+
+def test_a_record_failing_only_because_cleanup_was_incomplete_is_accepted():
+    run = sim_run()
+    record = record_for(run, cleanup={"complete": False})
+    assert record["verdict"] == "fail" and record["comparison"]["problems"] == ["server cleanup did not complete"]
+    assert all(row["match"] for row in record["comparison"]["steps"]) and record["comparison"]["recovered"]
+    assert validate_scenario_record(record, run) is record

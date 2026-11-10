@@ -174,6 +174,12 @@ def _server_problems(step: Step, connection: Dict[str, Any]) -> List[str]:
     return problems
 
 
+def recovered_after_failure(attempts: Sequence[Dict[str, Any]]) -> bool:
+    """True if the last attempt succeeded and at least one earlier attempt failed."""
+    outcomes = [observe_attempt(a)["outcome"] for a in attempts]
+    return len(outcomes) >= 2 and outcomes[-1] == "ok" and "error" in outcomes[:-1]
+
+
 def compare_scenario(scenario: Scenario, attempts: Sequence[Dict[str, Any]],
                      connections: Sequence[Dict[str, Any]], server_errors: Sequence[Dict[str, Any]],
                      cleanup: Dict[str, Any]) -> Dict[str, Any]:
@@ -221,9 +227,7 @@ def compare_scenario(scenario: Scenario, attempts: Sequence[Dict[str, Any]],
     if not cleanup.get("complete"):
         problems.append("server cleanup did not complete")
 
-    observed_outcomes = [observe_attempt(a)["outcome"] for a in attempts]
-    recovered = (len(observed_outcomes) >= 2 and observed_outcomes[-1] == "ok"
-                 and "error" in observed_outcomes[:-1])
+    recovered = recovered_after_failure(attempts)
     if not recovered:
         problems.append("no successful attempt after a failed one (no recovery)")
     return {"steps": rows, "recovered": recovered, "problems": problems,
@@ -251,10 +255,6 @@ def scenario_record(scenario: Scenario, run: Dict[str, Any], server_settings: Di
     }
 
 
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _is_str_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
@@ -270,7 +270,11 @@ def validate_scenario_record(record: Any, run: Dict[str, Any]) -> Dict[str, Any]
       problems; a row is a match exactly when it lists no problems;
     - each row's planned fault and expected outcome equal the record's scenario steps;
     - each row's observed outcome equals the run's attempt with the same number (rows without
-      an attempt have none), so a record cannot contradict the archived client results.
+      an attempt have none), so a record cannot contradict the archived client results;
+    - ``recovered`` equals ``recovered_after_failure`` of the run's attempts (the definition
+      compare_scenario uses);
+    - a "pass" verdict also requires completed cleanup, recovery and every row matching.
+      Failing records are accepted whenever they are otherwise consistent.
     """
     if not isinstance(record, dict) or record.get("record_type") != RECORD_TYPE:
         raise ValueError("not a fault-simulation scenario record")
@@ -333,4 +337,17 @@ def validate_scenario_record(record: Any, run: Dict[str, Any]) -> Dict[str, Any]
         if row.get("observed") != actual:
             raise ValueError(f"comparison row {number}: the recorded outcome {row.get('observed')!r} differs from "
                              f"the run's attempt {number} ({actual!r})")
+
+    actually_recovered = recovered_after_failure(attempts)
+    if comparison["recovered"] != actually_recovered:
+        raise ValueError(f"the record says recovered={comparison['recovered']}, but the run's attempts give "
+                         f"recovered={actually_recovered}")
+    if verdict == VERDICT_PASS:
+        if not record["cleanup"]["complete"]:
+            raise ValueError("the verdict is 'pass' but the record's cleanup did not complete")
+        if not comparison["recovered"]:
+            raise ValueError("the verdict is 'pass' but the run did not recover")
+        mismatched = [row["step"] for row in rows if not row["match"]]
+        if mismatched:
+            raise ValueError(f"the verdict is 'pass' but comparison rows {mismatched} do not match")
     return record
