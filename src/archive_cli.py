@@ -5,8 +5,9 @@ Run from the project root:
     python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 
 Commands: ``list``, ``show RUN_ID``, ``compare RUN_ID_A RUN_ID_B``,
-``export RUN_ID OUTPUT_PATH``, ``performance RUN_ID [limits]`` and
-``plot RUN_ID OUTPUT_PATH [limits]`` (a self-contained HTML report). ``--db`` and
+``export RUN_ID OUTPUT_PATH``, ``performance RUN_ID [limits]``,
+``plot RUN_ID OUTPUT_PATH [limits]`` (a self-contained HTML report) and
+``accuracy RUN_ID --reference-a AMPERES --reference-source TEXT``. ``--db`` and
 ``--config`` are global options and go before the command.
 
 Database selection:
@@ -21,7 +22,9 @@ No command creates a database, changes one, or starts the emulators.
 Exit codes: 0 success, 1 expected operational failure (missing database or run, invalid
 archive, export destination exists, configuration problem), 2 invalid command-line usage.
 ``performance`` also exits with 1, after printing the complete report, when a configured
-limit fails or cannot be evaluated (status ``fail`` or ``insufficient_data``).
+limit fails or cannot be evaluated (status ``fail`` or ``insufficient_data``). ``accuracy``
+exits with 0 for status ``ok`` or ``no_data`` and with 1, after printing the complete
+report, for status ``error`` (a result that cannot be represented as a finite float).
 Expected failures print one ``error:`` line on stderr; unexpected errors keep their traceback.
 """
 import argparse
@@ -31,6 +34,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from src.testing.accuracy import assess_run
+from src.testing.analysis import STATUS_ERROR
 from src.testing.archive import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -103,6 +108,12 @@ def _rate_limit(text: str) -> float:
     return value
 
 
+def _reference_source(text: str) -> str:
+    if not text.strip():
+        raise argparse.ArgumentTypeError("must describe where the reference comes from (not blank)")
+    return text
+
+
 def _limit(text: str) -> int:
     try:
         value = int(text)
@@ -165,6 +176,20 @@ def build_parser() -> argparse.ArgumentParser:
     plot_parser.add_argument("output", type=Path, metavar="OUTPUT_PATH",
                              help="new .html file (relative to the current directory); never overwritten")
     _add_limit_options(plot_parser)
+
+    accuracy_parser = commands.add_parser(
+        "accuracy", help="errors of one run's readings against a supplied reference current (JSON)",
+        description="Report bias, mean absolute error, RMSE and the spread of one archived run's successful readings "
+                    "against a constant reference current that you supply. The reference is not stored, and "
+                    "supplying it does not establish that this current was applied during the run. The supplied "
+                    "emulators return random values unrelated to any applied current, so for their runs the result "
+                    "is only the distance from your value, not device accuracy. Exit 1 (after printing the report) "
+                    "if a result cannot be represented.")
+    accuracy_parser.add_argument("run_id", type=_run_id, metavar="RUN_ID")
+    accuracy_parser.add_argument("--reference-a", type=_number, required=True, metavar="AMPERES",
+                                 help="the known true current, in amperes (finite; zero and negative allowed)")
+    accuracy_parser.add_argument("--reference-source", type=_reference_source, required=True, metavar="TEXT",
+                                 help="where the reference comes from, e.g. a calibrator and its certificate")
     return parser
 
 
@@ -238,6 +263,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             status = report["thresholds"]["status"]
             if status not in (STATUS_PASS, STATUS_NOT_EVALUATED):
                 print(f"performance limits: {status}", file=sys.stderr)
+                return EXIT_FAILURE
+        elif args.command == "accuracy":
+            report = assess_run(archive.load_run(args.run_id), args.reference_a,
+                                reference_source=args.reference_source)
+            print(_json(report))
+            if report["status"] == STATUS_ERROR:
+                print(f"accuracy: {report['error']['message']}", file=sys.stderr)
                 return EXIT_FAILURE
         elif args.command == "plot":
             document = render_run_report(archive.load_run(args.run_id), _limits(args)).encode("utf-8")

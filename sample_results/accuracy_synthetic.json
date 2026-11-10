@@ -1,0 +1,100 @@
+{
+  "synthetic": true,
+  "description": "Synthetic datasets sharing one known reference, to illustrate bias, spread and RMSE. Not data from, or a ranking of, the supplied Greenlee, ENTES or CIRCUTOR emulators.",
+  "reference": {
+    "current_a": 2.0,
+    "source": "synthetic: a fixed 2.000 A reference chosen for this demo (no device, no measurement)"
+  },
+  "profiles": {
+    "synthetic-biased-precise": {
+      "description": "every reading about 0.1 A high, with very little spread",
+      "readings_a": [
+        2.1,
+        2.11,
+        2.09,
+        2.1,
+        2.1
+      ],
+      "assessment": {
+        "status": "ok",
+        "reference": {
+          "current_a": 2.0,
+          "source": "synthetic: a fixed 2.000 A reference chosen for this demo (no device, no measurement)"
+        },
+        "count": 5,
+        "bias_a": 0.1,
+        "mean_absolute_error_a": 0.1,
+        "rmse_a": 0.1001998003990028,
+        "stddev_population_a": 0.006324555320336764,
+        "interpretation": "Errors are relative to the supplied reference. They describe accuracy only if that current was actually applied while the readings were taken; supplying a reference does not establish that. stddev_population_a is the spread of the readings, not accuracy."
+      }
+    },
+    "synthetic-unbiased-noisy": {
+      "description": "correct on average, but individual readings scatter widely",
+      "readings_a": [
+        1.8,
+        2.2,
+        1.9,
+        2.1,
+        2.0
+      ],
+      "assessment": {
+        "status": "ok",
+        "reference": {
+          "current_a": 2.0,
+          "source": "synthetic: a fixed 2.000 A reference chosen for this demo (no device, no measurement)"
+        },
+        "count": 5,
+        "bias_a": 4.4408920985006264e-17,
+        "mean_absolute_error_a": 0.12000000000000006,
+        "rmse_a": 0.1414213562373096,
+        "stddev_population_a": 0.14142135623730956,
+        "interpretation": "Errors are relative to the supplied reference. They describe accuracy only if that current was actually applied while the readings were taken; supplying a reference does not establish that. stddev_population_a is the spread of the readings, not accuracy."
+      }
+    },
+    "synthetic-accurate": {
+      "description": "correct on average, with little spread",
+      "readings_a": [
+        2.01,
+        1.99,
+        2.0,
+        2.02,
+        1.98
+      ],
+      "assessment": {
+        "status": "ok",
+        "reference": {
+          "current_a": 2.0,
+          "source": "synthetic: a fixed 2.000 A reference chosen for this demo (no device, no measurement)"
+        },
+        "count": 5,
+        "bias_a": -4.4408920985006264e-17,
+        "mean_absolute_error_a": 0.011999999999999966,
+        "rmse_a": 0.01414213562373093,
+        "stddev_population_a": 0.014142135623730932,
+        "interpretation": "Errors are relative to the supplied reference. They describe accuracy only if that current was actually applied while the readings were taken; supplying a reference does not establish that. stddev_population_a is the spread of the readings, not accuracy."
+      }
+    }
+  },
+  "ordering_by_rmse": [
+    {
+      "rank": 1,
+      "name": "synthetic-accurate",
+      "rmse_a": 0.01414213562373093,
+      "count": 5
+    },
+    {
+      "rank": 2,
+      "name": "synthetic-biased-precise",
+      "rmse_a": 0.1001998003990028,
+      "count": 5
+    },
+    {
+      "rank": 3,
+      "name": "synthetic-unbiased-noisy",
+      "rmse_a": 0.1414213562373096,
+      "count": 5
+    }
+  ],
+  "ordering_note": "Ordered by observed RMSE against the shared synthetic reference. This does not identify a most reliable device and makes no claim of statistical significance; comparable measurement conditions are the caller's responsibility. Equal RMSE values share a rank."
+}
