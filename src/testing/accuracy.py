@@ -24,15 +24,18 @@ Metrics (amperes), for readings x_1..x_n and reference r, with errors e_i = x_i 
 No relative (percentage) metrics: they are undefined for a zero reference and add little
 for a constant one.
 
-Numerics: sums use ``math.fsum``. RMSE and the spread are computed by scaling by the
-largest magnitude, so squaring never overflows; for example readings [1e200] against a
-reference of 0 give an RMSE of exactly 1e200. If a difference from the reference itself
-overflows, everything is recomputed on values scaled by 1/4. Only a result that cannot be
+Numerics: sums use ``math.fsum``. RMSE is computed by scaling by the largest error, so
+squaring never overflows; for example readings [1e200] against a reference of 0 give an
+RMSE of exactly 1e200. If a difference from the reference itself overflows, bias, MAE and
+RMSE are recomputed on values scaled by 1/4. The spread is computed separately from the
+readings themselves with ``statistics.pstdev`` (exact fractions), so it does not depend on
+the reference and keeps small variation next to large values. Only a result that cannot be
 represented as a finite float gives status "error" (with an explanatory ``error`` field);
 invalid inputs raise ValueError. Every result is strict-JSON compatible.
 """
 import math
 import numbers
+import statistics
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from src.testing.analysis import STATUS_ERROR, STATUS_NO_DATA, STATUS_OK
@@ -86,16 +89,22 @@ def _rms(values: Sequence[float]) -> float:
     return largest * math.sqrt(math.fsum((v / largest) ** 2 for v in values) / len(values))
 
 
-def _metrics(readings: Sequence[float], reference: float, scale: float) -> Optional[Tuple[float, ...]]:
-    """(bias, MAE, RMSE, stddev) of ``scale``-times the data, or None if an intermediate overflows."""
+def _error_metrics(readings: Sequence[float], reference: float, scale: float) -> Optional[Tuple[float, ...]]:
+    """(bias, MAE, RMSE) of ``scale``-times the errors, or None if a scaled error overflows."""
     errors = [x * scale - reference * scale for x in readings]
     if not all(math.isfinite(e) for e in errors):
         return None
-    bias = _mean(errors)
-    deviations = [e - bias for e in errors]  # the readings' deviations from their own mean
-    if not all(math.isfinite(d) for d in deviations):
-        return None
-    return bias, _mean([abs(e) for e in errors]), _rms(errors), _rms(deviations)
+    return _mean(errors), _mean([abs(e) for e in errors]), _rms(errors)
+
+
+def _spread(readings: Sequence[float]) -> float:
+    """Population standard deviation of the readings themselves, independent of the reference.
+
+    statistics.pstdev works with exact fractions, so a small variation next to a large value
+    (e.g. [1e16, 1e16 + 2] -> 1.0) is not lost, and the result for finite floats is at most
+    half their range, so it is always finite.
+    """
+    return float(statistics.pstdev(readings))
 
 
 def assess_accuracy(values: Iterable[Any], reference_a: Any, *, reference_source: Any) -> Dict[str, Any]:
@@ -124,11 +133,15 @@ def assess_accuracy(values: Iterable[Any], reference_a: Any, *, reference_source
         return result
 
     scale = 1.0
-    scaled = _metrics(readings, reference, scale)
+    scaled = _error_metrics(readings, reference, scale)
     if scaled is None:
-        scale = 0.25  # exact power of two: halves the largest difference twice, so nothing overflows
-        scaled = _metrics(readings, reference, scale)
-    metrics = dict(zip(METRIC_KEYS, (value / scale for value in scaled)))
+        scale = 0.25  # exact power of two: |x/4 - r/4| is at most half the float range, so nothing overflows
+        scaled = _error_metrics(readings, reference, scale)
+    metrics = dict(zip(METRIC_KEYS[:3], (value / scale for value in scaled)))
+    try:
+        metrics["stddev_population_a"] = _spread(readings)
+    except OverflowError:  # not expected for finite floats; reported rather than leaked
+        metrics["stddev_population_a"] = math.inf
     too_large = [key for key, value in metrics.items() if not math.isfinite(value)]
     if too_large:
         result["status"] = STATUS_ERROR

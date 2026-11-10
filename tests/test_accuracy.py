@@ -152,6 +152,50 @@ def test_results_are_strict_json(values):
     assert json.loads(json.dumps(result, allow_nan=False)) == result
 
 
+# --- Spread depends only on the readings ------------------------------------------------------------------
+
+def exact_spread(values):
+    """Independent oracle: population standard deviation in exact rational arithmetic, rounded once at the end."""
+    mean = sum(Fraction(v) for v in values) / len(values)
+    variance = sum((Fraction(v) - mean) ** 2 for v in values) / len(values)
+    # Integer square root at high scale, so only the final conversion rounds.
+    scale = 10 ** 40
+    return math.isqrt(variance.numerator * scale ** 2 // variance.denominator) / scale
+
+
+@pytest.mark.parametrize("values, expected", [([1.0, 2.0], 0.5), ([1e16, 1e16 + 2], 1.0)])
+@pytest.mark.parametrize("reference", [0, 1e16, 1e20, -1e20])
+def test_spread_does_not_depend_on_the_reference(values, expected, reference):
+    result = assess(values, reference=reference)
+    assert result["status"] == "ok"
+    assert result["stddev_population_a"] == expected == exact_spread(values)
+
+
+def test_small_variation_next_to_a_large_bias_is_kept():
+    result = assess([1e16, 1e16 + 2], reference=0)
+    assert result["stddev_population_a"] == 1.0  # not sqrt(2), which rounded errors and mean would give
+    assert result["bias_a"] == 1e16 + 1 and result["rmse_a"] == pytest.approx(1e16 + 1, rel=1e-15)
+
+
+@pytest.mark.parametrize("values", [BIASED, NOISY, ACCURATE, [0.1, 0.7, -0.3, 2.5], [3.0, 3.0, 3.0 + 2 ** -50],
+                                    [123456.789, 123456.791, 123456.7905]])
+@pytest.mark.parametrize("reference", [0.0, 2.0, -7.5e3, 1e12])
+def test_spread_matches_an_exact_oracle(values, reference):
+    assert assess(values, reference=reference)["stddev_population_a"] == pytest.approx(exact_spread(values),
+                                                                                       rel=1e-15, abs=0)
+
+
+@pytest.mark.parametrize("values, expected", [
+    ([1.7e308, -1.7e308], 1.7e308),
+    ([1.7976931348623157e308, -1.7976931348623157e308], 1.7976931348623157e308),  # the largest float
+    ([1.5e308, 1.5e308, 1.5e308], 0.0),
+    ([1e200], 0.0),
+])
+def test_spread_of_extreme_readings_is_finite_and_exact(values, expected):
+    result = assess(values, reference=0)
+    assert result["status"] == "ok" and result["stddev_population_a"] == expected
+
+
 # --- Invalid input ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), True, "1.0", None, 10 ** 400, 1j])

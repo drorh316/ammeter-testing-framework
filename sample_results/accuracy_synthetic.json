@@ -25,7 +25,7 @@
         "bias_a": 0.1,
         "mean_absolute_error_a": 0.1,
         "rmse_a": 0.1001998003990028,
-        "stddev_population_a": 0.006324555320336765,
+        "stddev_population_a": 0.006324555320336764,
         "interpretation": "Errors are relative to the supplied reference. They describe accuracy only if that current was actually applied while the readings were taken; supplying a reference does not establish that. stddev_population_a is the spread of the readings, not accuracy."
       }
     },
@@ -48,7 +48,7 @@
         "bias_a": 4.4408920985006264e-17,
         "mean_absolute_error_a": 0.12000000000000006,
         "rmse_a": 0.1414213562373096,
-        "stddev_population_a": 0.1414213562373096,
+        "stddev_population_a": 0.14142135623730956,
         "interpretation": "Errors are relative to the supplied reference. They describe accuracy only if that current was actually applied while the readings were taken; supplying a reference does not establish that. stddev_population_a is the spread of the readings, not accuracy."
       }
     },
