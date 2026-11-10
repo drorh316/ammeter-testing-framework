@@ -1,6 +1,6 @@
 # Sample results
 
-Three runs exported from a real archive, one per supplied ammeter emulator, and a [performance report](#performance-report) for one of them:
+Three runs exported from a real archive, one per supplied ammeter emulator, and a [performance report](#performance-report) and an [HTML report with charts](#html-report) for one of them:
 
 | File | Ammeter | Run ID | Started (UTC) |
 |---|---|---|---|
@@ -30,5 +30,15 @@ Three runs exported from a real archive, one per supplied ammeter emulator, and 
 - **Redirecting on Windows:** Windows PowerShell 5.1 writes UTF-16 when output is redirected with `>`, so use Git Bash, or `cmd /c "... > file"`.
 - **Reproducing without the archive:** `tests/test_performance.py` rebuilds the report from the committed `greenlee_run.json` with the same limits and checks that it equals this file.
 - **What it shows:** on this run (Windows 10, 5 Hz, 10 attempts), the start lateness was at most about 0.67 ms, and request durations ranged up to about 24 ms. These describe that run on that machine; they are not a timing guarantee.
+
+## HTML report
+`greenlee_report.html` is the [HTML run report](../README.md#html-run-report-with-charts) for the same Greenlee run, `503ea15b-e9b0-42a6-af17-c36aeb520856`. Open it in any browser; it needs no network access.
+
+- **Command:** run from the project root against the local archive that holds the run (identical to `greenlee_run.json`), with no limits:
+  ```bash
+  python -m src.archive_cli plot 503ea15b-e9b0-42a6-af17-c36aeb520856 sample_results/greenlee_report.html
+  ```
+- **Reproducing without the archive:** `tests/test_visualization.py` renders the committed `greenlee_run.json` and checks that the result is identical to this file.
+- **What it shows:** 10 successful readings, no failures, no skipped slots. Start lateness was below 1 ms and request durations were up to about 24 ms. The current values are random emulator output.
 
 To compare two of these runs, or list them, use the commands in the main [README](../README.md#querying-the-archive-command-line) with a local archive that contains them. The JSON files themselves are standalone and need no database.

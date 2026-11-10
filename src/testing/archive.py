@@ -666,38 +666,50 @@ class ResultArchive:
         the partly written new file is removed and ExportError is raised. If the process is
         killed while writing, a partial file can remain; there is no atomic publication.
         """
-        output = Path(output_path)
         validate_run_id(run_id)
         data = (json.dumps(self.load_run(run_id), indent=2, ensure_ascii=False, allow_nan=False)
                 + "\n").encode("utf-8")
-        if not output.parent.is_dir():
-            raise ExportError(f"output directory {output.parent} does not exist")
+        return write_new_file(output_path, data)
+
+
+def write_new_file(output_path: Union[str, Path], data: bytes) -> Path:
+    """Write ``data`` to a new file and return its path (used by export and the HTML report).
+
+    The caller produces ``data`` before calling, so nothing is created if that fails. The
+    directory must already exist, and an existing file is never overwritten or removed. If
+    writing fails, the partly written new file is removed (or, if that also fails, the error
+    says so and names it) and ExportError is raised with the write error as its cause. If the
+    process is killed while writing, a partial file can remain; there is no atomic publication.
+    """
+    output = Path(output_path)
+    if not output.parent.is_dir():
+        raise ExportError(f"output directory {output.parent} does not exist")
+    try:
+        stream = _create_exclusive(output)
+    except FileExistsError as exc:
+        raise ExportError(f"{output} already exists; it was not overwritten") from exc
+    except OSError as exc:
+        raise ExportError(f"cannot create {output}: {exc}") from exc
+    # From here on the file is ours, so it may be removed if the write fails.
+    try:
+        with stream:
+            stream.write(data)
+    except BaseException as exc:
+        cleanup_error: Optional[OSError] = None
         try:
-            stream = _create_exclusive(output)
-        except FileExistsError as exc:
-            raise ExportError(f"{output} already exists; it was not overwritten") from exc
-        except OSError as exc:
-            raise ExportError(f"cannot create {output}: {exc}") from exc
-        # From here on the file is ours, so it may be removed if the write fails.
-        try:
-            with stream:
-                stream.write(data)
-        except BaseException as exc:
-            cleanup_error: Optional[OSError] = None
-            try:
-                output.unlink()
-            except OSError as unlink_error:
-                cleanup_error = unlink_error
-                exc.add_note(f"the partial file {output} could not be removed: {unlink_error!r}")
-            if isinstance(exc, OSError):
-                if cleanup_error is None:
-                    message = f"writing {output} failed; the partial file was removed: {exc}"
-                else:
-                    message = (f"writing {output} failed: {exc}; the partial file {output} could NOT be "
-                               f"removed ({cleanup_error}); delete it manually")
-                raise ExportError(message) from exc
-            raise
-        return output
+            output.unlink()
+        except OSError as unlink_error:
+            cleanup_error = unlink_error
+            exc.add_note(f"the partial file {output} could not be removed: {unlink_error!r}")
+        if isinstance(exc, OSError):
+            if cleanup_error is None:
+                message = f"writing {output} failed; the partial file was removed: {exc}"
+            else:
+                message = (f"writing {output} failed: {exc}; the partial file {output} could NOT be "
+                           f"removed ({cleanup_error}); delete it manually")
+            raise ExportError(message) from exc
+        raise
+    return output
 
 
 def _create_exclusive(path: Path) -> BinaryIO:

@@ -5,7 +5,8 @@ Run from the project root:
     python -m src.archive_cli [--db PATH | --config PATH] COMMAND ...
 
 Commands: ``list``, ``show RUN_ID``, ``compare RUN_ID_A RUN_ID_B``,
-``export RUN_ID OUTPUT_PATH`` and ``performance RUN_ID [limits]``. ``--db`` and
+``export RUN_ID OUTPUT_PATH``, ``performance RUN_ID [limits]`` and
+``plot RUN_ID OUTPUT_PATH [limits]`` (a self-contained HTML report). ``--db`` and
 ``--config`` are global options and go before the command.
 
 Database selection:
@@ -36,6 +37,7 @@ from src.testing.archive import (
     ArchiveError,
     ResultArchive,
     validate_run_id,
+    write_new_file,
 )
 from src.testing.performance import (
     STATUS_NOT_EVALUATED,
@@ -43,6 +45,7 @@ from src.testing.performance import (
     PerformanceLimits,
     build_performance_report,
 )
+from src.testing.visualization import render_run_report
 from src.utils.config import ConfigError, load_config, parse_result_management
 
 EXIT_OK = 0
@@ -151,13 +154,32 @@ def build_parser() -> argparse.ArgumentParser:
                     "archived run. Limits are optional and user-defined; a value equal to a limit passes. "
                     "Exit 1 (after printing the report) if a configured limit fails or cannot be evaluated.")
     performance_parser.add_argument("run_id", type=_run_id, metavar="RUN_ID")
-    performance_parser.add_argument("--max-start-lateness", type=_seconds_limit, metavar="SECONDS",
-                                    help="limit for the largest start lateness, in seconds")
-    performance_parser.add_argument("--max-failure-rate", type=_rate_limit, metavar="RATE",
-                                    help="limit for failed / attempted (0 to 1)")
-    performance_parser.add_argument("--max-skipped-slot-rate", type=_rate_limit, metavar="RATE",
-                                    help="limit for skipped / (attempted + skipped) (0 to 1)")
+    _add_limit_options(performance_parser)
+
+    plot_parser = commands.add_parser(
+        "plot", help="write a self-contained HTML report with SVG charts for one run",
+        description="Write one run's details, statistics, performance summary and charts to a new HTML file "
+                    "(no scripts or external resources). The file is never overwritten. Optional limits are "
+                    "shown in the report's performance section; they do not change the exit code.")
+    plot_parser.add_argument("run_id", type=_run_id, metavar="RUN_ID")
+    plot_parser.add_argument("output", type=Path, metavar="OUTPUT_PATH",
+                             help="new .html file (relative to the current directory); never overwritten")
+    _add_limit_options(plot_parser)
     return parser
+
+
+def _add_limit_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-start-lateness", type=_seconds_limit, metavar="SECONDS",
+                        help="limit for the largest start lateness, in seconds")
+    parser.add_argument("--max-failure-rate", type=_rate_limit, metavar="RATE",
+                        help="limit for failed / attempted (0 to 1)")
+    parser.add_argument("--max-skipped-slot-rate", type=_rate_limit, metavar="RATE",
+                        help="limit for skipped / (attempted + skipped) (0 to 1)")
+
+
+def _limits(args: argparse.Namespace) -> PerformanceLimits:
+    return PerformanceLimits(max_start_lateness_s=args.max_start_lateness, max_failure_rate=args.max_failure_rate,
+                             max_skipped_slot_rate=args.max_skipped_slot_rate)
 
 
 def _database_path(args: argparse.Namespace) -> Path:
@@ -211,15 +233,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "compare":
             print(_json(archive.compare_runs(args.run_id_a, args.run_id_b)))
         elif args.command == "performance":
-            limits = PerformanceLimits(max_start_lateness_s=args.max_start_lateness,
-                                       max_failure_rate=args.max_failure_rate,
-                                       max_skipped_slot_rate=args.max_skipped_slot_rate)
-            report = build_performance_report(archive.load_run(args.run_id), limits)
+            report = build_performance_report(archive.load_run(args.run_id), _limits(args))
             print(_json(report))
             status = report["thresholds"]["status"]
             if status not in (STATUS_PASS, STATUS_NOT_EVALUATED):
                 print(f"performance limits: {status}", file=sys.stderr)
                 return EXIT_FAILURE
+        elif args.command == "plot":
+            document = render_run_report(archive.load_run(args.run_id), _limits(args)).encode("utf-8")
+            written = write_new_file(args.output, document)  # the document exists before the file is created
+            print(f"Wrote the report for run {args.run_id} to {written}")
         else:
             written = archive.export_run(args.run_id, args.output)
             print(f"Exported run {args.run_id} to {written}")
