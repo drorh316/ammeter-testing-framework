@@ -21,7 +21,10 @@ Bounded lifecycle
   across as many partial reads as TCP delivers, never more than that, within
   ``command_timeout_s``. Bytes that are not a prefix of the command end the read at once.
 - Writing a reply: ``sendall`` with ``write_timeout_s``.
-- The delay waits on the stop event, so cleanup interrupts it immediately.
+- The delay waits on the stop event, so cleanup interrupts it immediately. If the delay
+  runs out, the reading is taken (an emulator error is recorded like any handler error) and
+  the late reply is sent; only a ``ConnectionError`` from that send (the client has already
+  given up and closed) is treated as expected and not recorded.
 - All blocking socket calls use short timeouts and check the stop event, so cleanup is
   noticed within about POLL_INTERVAL_S.
 - ``close()`` (also called by ``__exit__``, and by ``start()`` when startup fails) sets the
@@ -276,10 +279,14 @@ class FaultSimulationServer:
                 with self._lock:
                     entry["delay_interrupted"] = interrupted
                 if not interrupted:
+                    reply = self._reading()  # emulator errors go to the normal handler-error path
                     try:
-                        self._send(conn, entry, self._reading())
-                    except OSError:
-                        pass  # the client has normally given up by now; not an error
+                        self._send(conn, entry, reply)
+                    except ConnectionError:
+                        # Expected: the client gave up after its timeout and closed, so the late
+                        # reply meets a reset, aborted or broken connection. Any other error
+                        # (e.g. a write timeout) is unexpected and is recorded below.
+                        pass
             elif step.fault == FAULT_CLOSE:
                 pass  # orderly close below: the client sees end-of-stream, not a reset
         except Exception as exc:

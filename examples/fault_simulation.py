@@ -15,8 +15,10 @@ AmmeterTestFramework, the real TCP client, analysis and the SQLite archive. Scen
     4 reply held longer than 1 s       -> AmmeterTimeoutError
     5 real Greenlee reading            -> success (recovery)
 
-The order of outcomes is repeatable; the current values and timings are not. The supplied
-emulators, main.py and examples/run_tests.py are not involved and are unchanged.
+The order of outcomes is repeatable; the current values and timings are not. The existing
+client, framework, sampling, analysis and archive code, the Greenlee measurement logic and
+the check_archived helper from examples/run_tests.py are reused unchanged. main.py, the
+normal sampling demo's entry point and the supplied emulator servers are not started.
 
 Outputs:
 - the run, saved in ``--db`` (default ``results/fault_simulation.sqlite3`` under the

@@ -239,15 +239,19 @@ def test_no_recovery_fails():
 # --- Scenario record --------------------------------------------------------------------------
 
 def sim_run():
+    """A complete run whose failed attempts carry exactly the errors the basic scenario expects."""
     run = make_run([0.1, None, None, None, 0.5], ammeter=DEVICE)
     run["run_id"] = "8d5c8f6e-0000-4000-8000-000000000001"
+    for number, (error_type, message) in EXPECTED_ERRORS.items():
+        run["attempts"][number - 1]["error"] = {"type": error_type, "message": message}
     return run
 
 
-def record_for(run, comparison=None):
+def record_for(run, comparison=None, cleanup=None):
+    cleanup = cleanup or {"complete": True, "elapsed_s": 0.01}
     return scenario_record(BASIC_RECOVERY, run, {"host": "127.0.0.1", "port": 1, "delay_s": 3.0},
-                           expected_connections(), [], {"complete": True, "elapsed_s": 0.01},
-                           comparison or compare())
+                           expected_connections(), [], cleanup,
+                           comparison or compare(attempts=run["attempts"], cleanup=cleanup))
 
 
 def test_scenario_record_shape_and_strict_json():
@@ -272,7 +276,7 @@ def test_a_matching_record_is_accepted():
     ({"device": "fault-sim:greenlee:basic-recovery:v2"}, "device"),
     ({"record_type": "other"}, "not a fault-simulation scenario record"),
     ({"format_version": 2}, "format version"),
-    ({"verdict": "maybe"}, "no valid comparison"),
+    ({"verdict": "maybe"}, "does not match the comparison's verdict"),
     ({"comparison": None}, "no valid comparison"),
 ])
 def test_a_record_for_another_run_or_of_another_kind_is_rejected(change, message):
@@ -326,8 +330,7 @@ def test_a_simulation_run_with_its_record_shows_the_comparison_and_verdict():
 
 def test_a_failing_record_lists_mismatches_and_problems():
     run = sim_run()
-    comparison = compare(cleanup={"complete": False})
-    document = render_run_report(run, scenario=record_for(run, comparison))
+    document = render_run_report(run, scenario=record_for(run, cleanup={"complete": False}))
     assert "<strong>Verdict: fail</strong>" in document and "server cleanup did not complete" in document
 
 
@@ -335,8 +338,10 @@ def test_record_text_is_escaped():
     run = sim_run()
     record = record_for(run)
     record["scenario"]["description"] = "<script>alert(1)</script>"
+    run["attempts"][1]["error"] = {"type": "<b>", "message": "a & b"}  # hostile text in the run itself
     record["comparison"]["steps"][1]["observed"] = {"outcome": "error", "type": "<b>", "message": "a & b"}
     record["comparison"]["problems"] = ["<i>x</i>"]
+    record["verdict"] = record["comparison"]["verdict"] = "fail"
     document = render_run_report(run, scenario=record)
     assert "<script>" not in document and "<b>" not in document and "<i>x" not in document
     assert "&lt;script&gt;" in document and "a &amp; b" in document
@@ -428,3 +433,170 @@ def test_committed_simulation_samples_are_consistent_and_reproducible():
     assert recomputed == record["comparison"]
     expected_html = (samples / "fault_simulation_report.html").read_text(encoding="utf-8")
     assert render_run_report(run, scenario=record) == expected_html
+
+
+# --- Record consistency (starting from the committed sample) -----------------------------------
+
+def committed_sample():
+    from src.utils.config import PROJECT_ROOT
+
+    samples = PROJECT_ROOT / "sample_results"
+    run = json.loads((samples / "fault_simulation_run.json").read_text(encoding="utf-8"))
+    record = json.loads((samples / "fault_simulation_scenario.json").read_text(encoding="utf-8"))
+    return run, record
+
+
+def _set_version(record):
+    record["scenario"]["version"] = 999
+
+
+def _set_scenario_id(record):
+    record["scenario"]["id"] = "other"
+
+
+def _set_emulator(record):
+    record["scenario"]["emulator"] = "entes"
+
+
+def _top_verdict_fail(record):
+    record["verdict"] = "fail"
+
+
+def _both_verdicts_fail_without_problems(record):
+    record["verdict"] = record["comparison"]["verdict"] = "fail"
+
+
+def _problems_but_pass(record):
+    record["comparison"]["problems"] = ["step 1: something"]
+
+
+def _rows_replaced_by_none(record):
+    record["comparison"]["steps"] = [None]
+
+
+def _no_rows(record):
+    record["comparison"]["steps"] = []
+
+
+def _row_wrong_number(record):
+    record["comparison"]["steps"][1]["step"] = 7
+
+
+def _row_match_with_problems(record):
+    record["comparison"]["steps"][0]["problems"] = ["x"]
+
+
+def _row_problems_not_strings(record):
+    record["comparison"]["steps"][0]["problems"] = None
+
+
+def _row_expected_differs(record):
+    record["comparison"]["steps"][3]["expected"] = {"outcome": "ok"}
+
+
+def _row_fault_differs(record):
+    record["comparison"]["steps"][1]["fault"] = "ok"
+
+
+def _observed_success_for_a_failure(record):
+    record["comparison"]["steps"][1]["observed"] = {"outcome": "ok"}
+
+
+def _observed_other_message(record):
+    record["comparison"]["steps"][2]["observed"]["message"] = "something else"
+
+
+def _observed_failure_for_a_success(record):
+    record["comparison"]["steps"][0]["observed"] = {"outcome": "error", "type": "X", "message": "y"}
+
+
+def _recovered_not_bool(record):
+    record["comparison"]["recovered"] = "yes"
+
+
+def _scenario_missing(record):
+    record["scenario"] = None
+
+
+def _cleanup_missing(record):
+    record["cleanup"] = {}
+
+
+@pytest.mark.parametrize("corrupt, message", [
+    (_set_version, "does not match the device identity"),
+    (_set_scenario_id, "does not match the device identity"),
+    (_set_emulator, "does not match the device identity"),
+    (_top_verdict_fail, "does not match the comparison's verdict"),
+    (_both_verdicts_fail_without_problems, "contradicts the comparison's list of problems"),
+    (_problems_but_pass, "contradicts the comparison's list of problems"),
+    (_rows_replaced_by_none, "1 rows for 5 planned steps"),
+    (_no_rows, "0 rows for 5 planned steps"),
+    (_row_wrong_number, "row 2 is malformed"),
+    (_row_match_with_problems, "row 1 is marked match"),
+    (_row_problems_not_strings, "row 1 is malformed"),
+    (_row_expected_differs, "row 4 does not match scenario step 4"),
+    (_row_fault_differs, "row 2 does not match scenario step 2"),
+    (_observed_success_for_a_failure, "differs from the run's attempt 2"),
+    (_observed_other_message, "differs from the run's attempt 3"),
+    (_observed_failure_for_a_success, "differs from the run's attempt 1"),
+    (_recovered_not_bool, "no valid comparison"),
+    (_scenario_missing, "no valid scenario description"),
+    (_cleanup_missing, "no valid cleanup result"),
+])
+def test_inconsistent_or_malformed_records_are_rejected_before_rendering(corrupt, message):
+    run, record = committed_sample()
+    corrupt(record)
+    with pytest.raises(ValueError, match=message):
+        validate_scenario_record(record, run)
+    with pytest.raises(ValueError, match=message):
+        render_run_report(run, scenario=record)
+
+
+def test_a_none_row_is_rejected_even_when_the_row_count_is_right():
+    run, record = committed_sample()
+    record["comparison"]["steps"][2] = None
+    with pytest.raises(ValueError, match="row 3 is malformed"):
+        render_run_report(run, scenario=record)
+
+
+def test_a_matching_run_id_cannot_hide_different_client_results():
+    run, record = committed_sample()
+    run["attempts"][1] = {**run["attempts"][1], "error": {"type": "AmmeterConnectionError", "message": "refused"}}
+    with pytest.raises(ValueError, match="differs from the run's attempt 2"):
+        validate_scenario_record(record, run)
+
+
+def test_a_record_with_more_attempts_in_the_run_than_rows_is_rejected():
+    run, record = committed_sample()
+    run["attempts"].append(dict(run["attempts"][0], attempt=6))
+    with pytest.raises(ValueError, match="5 rows for 5 planned steps and 6 attempts"):
+        validate_scenario_record(record, run)
+
+
+def test_a_record_for_a_device_without_a_scenario_identity_is_rejected():
+    run, record = committed_sample()
+    run["ammeter"] = record["device"] = "fault-sim:custom"
+    with pytest.raises(ValueError, match="does not identify a fault-simulation scenario"):
+        validate_scenario_record(record, run)
+
+
+def test_a_failing_but_consistent_record_is_accepted():
+    run = sim_run()
+    run["attempts"][4] = {key: value for key, value in run["attempts"][4].items() if key != "current_a"}
+    run["attempts"][4].update(ok=False, error={"type": "X", "message": "y"})
+    record = record_for(run)
+    assert record["verdict"] == "fail" and validate_scenario_record(record, run) is record
+    assert "<strong>Verdict: fail</strong>" in render_run_report(run, scenario=record)
+
+
+def test_an_extra_unplanned_row_is_accepted_when_consistent():
+    run = sim_run()
+    connections = expected_connections() + [connection(6, "unplanned", command=COMMAND_INCOMPLETE, reply_sent=False)]
+    record = record_for(run, compare(attempts=run["attempts"], connections=connections))
+    assert len(record["comparison"]["steps"]) == 6 and record["comparison"]["steps"][5]["observed"] is None
+    assert validate_scenario_record(record, run) is record
+
+
+def test_the_committed_sample_record_is_still_valid():
+    run, record = committed_sample()
+    assert validate_scenario_record(record, run) is record

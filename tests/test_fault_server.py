@@ -29,6 +29,7 @@ from src.testing.fault_scenario import (
     Expected,
     Scenario,
     Step,
+    compare_scenario,
 )
 from src.testing.fault_server import FaultServerError, FaultSimulationServer
 
@@ -303,3 +304,113 @@ def test_demo_usage_errors_exit_2(capsys):
     with pytest.raises(SystemExit) as exc:
         demo.main(["--unknown"])
     assert exc.value.code == 2
+
+
+# --- The delayed reply: emulator errors versus a client that has gone -----------------------------
+
+class FailsOnFirstReading(FixedEmulator):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def measure_current(self):
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("sensor read failed")
+        return self.value
+
+
+class SignalsReading(FixedEmulator):
+    def __init__(self):
+        super().__init__()
+        self.measured = threading.Event()
+
+    def measure_current(self):
+        self.measured.set()
+        return self.value
+
+
+def test_an_emulator_oserror_in_the_delayed_step_is_recorded_and_fails_the_comparison():
+    # The client outcome is planned to match exactly, so only the server error can fail it.
+    scenario = Scenario("delay-error", 1, "test", "regression",
+                        (Step(FAULT_DELAY, Expected(False, "InvalidMeasurementError", "empty response"), "delay"),
+                         Step(FAULT_OK, OK, "recovery")))
+    with FaultSimulationServer(scenario.steps, delay_s=0.2, emulator=FailsOnFirstReading()) as srv:
+        # The request returns only once the handler has closed the connection, i.e. after the error.
+        with pytest.raises(InvalidMeasurementError, match="empty response") as first:
+            request(srv)
+        assert request(srv) == 1.25
+    entry = srv.connections()[0]
+    assert entry["delay_interrupted"] is False and entry["reply_sent"] is False
+    assert entry["error"] == {"type": "OSError", "message": "sensor read failed"}
+    assert srv.errors() == [{"where": "connection 1", "type": "OSError", "message": "sensor read failed"}]
+    assert_cleaned_up(srv)
+
+    attempts = [{"attempt": 1, "ok": False, "error": {"type": type(first.value).__name__, "message": str(first.value)}},
+                {"attempt": 2, "ok": True, "current_a": 1.25}]
+    result = compare_scenario(scenario, attempts, srv.connections(), srv.errors(), srv.cleanup)
+    assert result["verdict"] == "fail" and result["recovered"]
+    assert result["problems"] == ["step 1: server error: OSError: sensor read failed",
+                                  "server error (connection 1): OSError: sensor read failed"]
+
+
+def test_a_late_reply_to_a_client_that_gave_up_is_not_an_error():
+    emulator = SignalsReading()
+    with server(FAULT_DELAY, emulator=emulator, delay_s=1.5) as srv:
+        with pytest.raises(AmmeterTimeoutError):
+            request(srv, timeout=0.1)
+        assert emulator.measured.wait(GENEROUS_TIMEOUT_S)  # the delay ran out and the reading was taken
+    entry = srv.connections()[0]
+    assert entry["delay_interrupted"] is False and entry["error"] is None and srv.errors() == []
+    assert_cleaned_up(srv)  # the reply may or may not have been sent; either is expected
+
+
+class FakeConnection:
+    """Delivers the command, then fails ``sendall`` with ``send_error``."""
+
+    def __init__(self, command, send_error):
+        self.pending = command
+        self.send_error = send_error
+        self.closed = False
+
+    def settimeout(self, value):
+        pass
+
+    def recv(self, size):
+        chunk, self.pending = self.pending[:size], self.pending[size:]
+        return chunk
+
+    def sendall(self, data):
+        raise self.send_error
+
+    def close(self):
+        self.closed = True
+
+    def fileno(self):
+        return -1 if self.closed else 3
+
+
+def handle_delayed(send_error):
+    """Run one delayed-step handler directly (no threads, no network) with a failing send."""
+    srv = FaultSimulationServer(steps(FAULT_DELAY), delay_s=0.01, emulator=FixedEmulator())
+    entry = {"connection": 1, "fault": FAULT_DELAY, "command": None, "reply_sent": False,
+             "delay_interrupted": None, "finished": False, "socket_closed": False, "error": None}
+    srv._handle(FakeConnection(srv.command, send_error), entry, srv.steps[0])
+    return srv, entry
+
+
+@pytest.mark.parametrize("error", [ConnectionResetError("reset"), ConnectionAbortedError("aborted"),
+                                   BrokenPipeError("broken pipe")])
+def test_a_disconnected_client_during_the_late_reply_is_expected(error):
+    srv, entry = handle_delayed(error)
+    assert entry["error"] is None and srv.errors() == []
+    assert entry["delay_interrupted"] is False and entry["reply_sent"] is False
+    assert entry["finished"] and entry["socket_closed"]
+
+
+@pytest.mark.parametrize("error", [socket.timeout("write timed out"), OSError("network is down")])
+def test_other_send_errors_during_the_late_reply_are_recorded(error):
+    srv, entry = handle_delayed(error)
+    assert entry["error"] == {"type": type(error).__name__, "message": str(error)}
+    assert len(srv.errors()) == 1
+    assert entry["finished"] and entry["socket_closed"]

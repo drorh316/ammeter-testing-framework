@@ -251,8 +251,27 @@ def scenario_record(scenario: Scenario, run: Dict[str, Any], server_settings: Di
     }
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_str_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
 def validate_scenario_record(record: Any, run: Dict[str, Any]) -> Dict[str, Any]:
-    """Return ``record`` if it is a scenario record for exactly this run, else raise ValueError."""
+    """Return ``record`` if it is a consistent scenario record for exactly this run, else raise ValueError.
+
+    Checked (scoped to what the report shows, not a general schema):
+    - record type and format version; the exact run ID and device of ``run``;
+    - the record's scenario ID, version and emulator equal the identity in the run's device name;
+    - the structure the report reads: ``scenario``, ``cleanup``, ``comparison`` and each row;
+    - the top-level verdict equals the comparison's, and "pass" exactly when there are no
+      problems; a row is a match exactly when it lists no problems;
+    - each row's planned fault and expected outcome equal the record's scenario steps;
+    - each row's observed outcome equals the run's attempt with the same number (rows without
+      an attempt have none), so a record cannot contradict the archived client results.
+    """
     if not isinstance(record, dict) or record.get("record_type") != RECORD_TYPE:
         raise ValueError("not a fault-simulation scenario record")
     if record.get("format_version") != RECORD_FORMAT_VERSION:
@@ -263,8 +282,55 @@ def validate_scenario_record(record: Any, run: Dict[str, Any]) -> Dict[str, Any]
     if record.get("device") != run.get("ammeter"):
         raise ValueError(f"the scenario record is for device {record.get('device')!r}, "
                          f"but the run's device is {run.get('ammeter')!r}")
+
+    identity = parse_device_name(run.get("ammeter"))
+    if identity is None or identity["scenario_id"] is None:
+        raise ValueError(f"the run's device {run.get('ammeter')!r} does not identify a fault-simulation scenario")
+    scenario = record.get("scenario")
+    if not isinstance(scenario, dict) or not isinstance(scenario.get("description"), str) \
+            or not isinstance(scenario.get("steps"), list):
+        raise ValueError("the scenario record has no valid scenario description")
+    recorded = {"emulator": scenario.get("emulator"), "scenario_id": scenario.get("id"),
+                "version": scenario.get("version")}
+    if recorded != identity:
+        raise ValueError(f"the record's scenario {recorded} does not match the device identity {identity}")
+    if not isinstance(record.get("cleanup"), dict) or not isinstance(record["cleanup"].get("complete"), bool):
+        raise ValueError("the scenario record has no valid cleanup result")
+
     comparison = record.get("comparison")
     if not isinstance(comparison, dict) or not isinstance(comparison.get("steps"), list) \
-            or record.get("verdict") not in (VERDICT_PASS, VERDICT_FAIL):
-        raise ValueError("the scenario record has no valid comparison or verdict")
+            or not isinstance(comparison.get("recovered"), bool) or not _is_str_list(comparison.get("problems")):
+        raise ValueError("the scenario record has no valid comparison")
+    verdict = record.get("verdict")
+    if verdict not in (VERDICT_PASS, VERDICT_FAIL) or comparison.get("verdict") != verdict:
+        raise ValueError(f"the record's verdict {verdict!r} does not match the comparison's "
+                         f"verdict {comparison.get('verdict')!r}")
+    if (verdict == VERDICT_PASS) != (not comparison["problems"]):
+        raise ValueError(f"the verdict {verdict!r} contradicts the comparison's list of problems")
+
+    planned = scenario["steps"]
+    attempts = run.get("attempts", [])
+    rows = comparison["steps"]
+    if len(rows) < max(len(planned), len(attempts)):
+        raise ValueError(f"the comparison has {len(rows)} rows for {len(planned)} planned steps "
+                         f"and {len(attempts)} attempts")
+    for index, row in enumerate(rows):
+        number = index + 1
+        if not isinstance(row, dict) or row.get("step") != number or not isinstance(row.get("match"), bool) \
+                or not _is_str_list(row.get("problems")):
+            raise ValueError(f"comparison row {number} is malformed")
+        if row["match"] != (not row["problems"]):
+            raise ValueError(f"comparison row {number} is marked {'match' if row['match'] else 'mismatch'} "
+                             "but its problems say otherwise")
+        step = planned[index] if index < len(planned) else None
+        expected_fault = step.get("fault") if isinstance(step, dict) else None
+        expected_outcome = step.get("expected") if isinstance(step, dict) else None
+        if index < len(planned) and not isinstance(step, dict):
+            raise ValueError(f"scenario step {number} is malformed")
+        if row.get("fault") != expected_fault or row.get("expected") != expected_outcome:
+            raise ValueError(f"comparison row {number} does not match scenario step {number}")
+        actual = observe_attempt(attempts[index]) if index < len(attempts) else None
+        if row.get("observed") != actual:
+            raise ValueError(f"comparison row {number}: the recorded outcome {row.get('observed')!r} differs from "
+                             f"the run's attempt {number} ({actual!r})")
     return record
