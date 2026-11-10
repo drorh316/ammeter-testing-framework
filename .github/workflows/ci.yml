@@ -81,6 +81,10 @@ jobs:
         timeout-minutes: 2
         run: python -m examples.fault_simulation
 
+      - name: Run the synthetic accuracy demo
+        timeout-minutes: 1
+        run: python -m examples.accuracy_demo
+
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

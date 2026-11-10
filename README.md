@@ -7,7 +7,8 @@ On top of the emulators it adds a testing framework:
 - configurable sampling by count, duration and frequency;
 - statistics for each run (mean, median, standard deviation, minimum, maximum);
 - a SQLite archive of runs, with a command-line tool to list, show, compare and export them;
-- a separate [fault-simulation demo](#fault-simulation-demo) that runs the real client and sampling loop against a local server injecting planned faults.
+- a separate [fault-simulation demo](#fault-simulation-demo) that runs the real client and sampling loop against a local server injecting planned faults;
+- [accuracy metrics against a known reference](#accuracy-against-a-known-reference) that you supply (bias, mean absolute error, RMSE), demonstrated on synthetic data.
 
 **Requirements**
 - **Python 3.11.** The code needs at least 3.11, because it uses 3.11 features such as exception notes and `sqlite3` error names. Only Python 3.11 has been tested (see below); later versions have not been tested.
@@ -32,7 +33,7 @@ python -m venv .venv
 
 **Further documentation**
 - [docs/design.md](docs/design.md): design decisions, data flow, storage, error handling, testing strategy, tradeoffs and the status of the bonus challenges.
-- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type, and one labelled fault-simulation run.
+- [sample_results/](sample_results/README.md): three runs exported from the archive, one per ammeter type, one labelled fault-simulation run, and a synthetic accuracy example.
 - [Known limitations](#known-limitations) and [Fixes to the Supplied Code](#fixes-to-the-supplied-code).
 
 ## Project Structure
@@ -49,13 +50,15 @@ python -m venv .venv
 - `examples/`
   - `run_tests.py`: Sampling demo: starts the emulators and samples every configured ammeter (replaces the broken supplied placeholder).
   - `fault_simulation.py`: Fault-simulation demo: samples a local fault-injecting server and checks the planned outcomes.
+  - `accuracy_demo.py`: Accuracy metrics on synthetic datasets that share a known reference.
 - `src/`
-  - `archive_cli.py`: Command-line interface to the archive: `list`, `show`, `compare`, `export`.
+  - `archive_cli.py`: Command-line interface to the archive: `list`, `show`, `compare`, `export`, `performance`, `plot`, `accuracy`.
   - `testing/`
     - `sampling.py`: Sampling scheduler (`SamplingSettings`, `run_sampling`) and result records; no network or file access.
     - `analysis.py`: `summarize_measurements`: statistics of the successful measurements.
     - `performance.py`: `build_performance_report`: timing and failure consistency of one run, with optional user-defined limits.
     - `visualization.py`: `render_run_report`: self-contained HTML report with SVG charts for one run.
+    - `accuracy.py`: `assess_accuracy`, `assess_run`, `rank_by_rmse`: errors against a supplied reference current.
     - `fault_scenario.py`: Fault-simulation scenario, device identity, expected-vs-observed comparison and scenario record (pure logic).
     - `fault_server.py`: `FaultSimulationServer`: loopback TCP server that injects one planned fault per connection.
     - `archive.py`: `ResultArchive`: SQLite archive of results (schema, transactional save, load, list, compare, export).
@@ -72,6 +75,7 @@ python -m venv .venv
   - `test_performance.py`: Performance report and `performance` command tests.
   - `test_visualization.py`: HTML/SVG report and `plot` command tests.
   - `test_demo_summary.py`: Demo summary tests (no emulators started).
+  - `test_accuracy.py`: Accuracy metrics, extreme values, ordering, the `accuracy` command and the synthetic demo.
   - `test_fault_scenario.py`: Fault-simulation logic, report and sample tests (no sockets, no real time).
   - `test_fault_server.py`: Fault server and fault-simulation demo over real loopback TCP on temporary ports.
   - `test_emulators.py`: Emulator output encoding, port-reuse option, and the startup helper's stopped-emulator check (threads, and one real loopback socket on a temporary port).
@@ -82,7 +86,7 @@ python -m venv .venv
   - `conftest.py`: Stops any test from writing to the shipped results database.
 - `docs/`
   - `design.md`: Design decisions (see above).
-- `sample_results/`: Three runs exported from the demo archive, one per ammeter type, and one labelled fault-simulation run (see its README).
+- `sample_results/`: Three runs exported from the demo archive, one per ammeter type, one labelled fault-simulation run and a synthetic accuracy example (see its README).
 - `pytest.ini`: pytest settings (test folder and import path).
 - `requirements.txt`: Runtime dependencies (PyYAML).
 - `requirements-dev.txt`: Development dependencies (runtime dependencies plus pytest).
@@ -398,6 +402,46 @@ A separate, explicitly started demonstration of how the real client, sampling, a
 
 Example: [`sample_results/fault_simulation_*`](sample_results/README.md#fault-simulation-run).
 
+### Accuracy against a known reference
+
+Accuracy needs a **known reference**: the true current applied while the readings were taken. `src/testing/accuracy.py` evaluates readings against a constant reference current that **you supply**, together with a description of where it comes from. Both appear in every result. Nothing infers a reference, and no reference is ever attached to an archived run.
+
+**Why it is not applied to the supplied emulators:** they return independent random numbers (for example, Greenlee draws V and R at random for every request) that do not depend on any applied current, and their ranges barely overlap (ENTES 5–200 A, CIRCUTOR 0.001–0.1 A). Their outputs therefore cannot establish accuracy, and they must not be ranked against each other by accuracy. Low spread alone is not accuracy either: readings can agree closely and all be wrong by the same amount.
+
+**Metrics** (amperes), for successful readings x<sub>i</sub> and reference r, with errors e<sub>i</sub> = x<sub>i</sub> − r:
+
+| Key | Formula | Meaning |
+|---|---|---|
+| `bias_a` | mean(e) | signed mean error: systematic offset (positive = reads high) |
+| `mean_absolute_error_a` | mean(\|e\|) | typical size of one error |
+| `rmse_a` | √mean(e²) | root-mean-square error; RMSE² = bias² + spread² |
+| `stddev_population_a` | population standard deviation of the readings | **spread** of the readings around their own mean; it does not use the reference and is not accuracy. Reading it as repeatability needs controlled conditions. |
+
+- **No percentage metrics:** they are undefined for a zero reference and add little for a constant one. Zero and negative references are valid.
+- **Statuses:** `ok`; `no_data` (no successful readings: count 0, metrics `null`); `error` (a result cannot be represented as a finite float, with an `error` field explaining why). Invalid input (NaN, infinity, non-numbers, an integer too large for a float, a blank source) raises `ValueError`.
+- **Numerics:** `math.fsum` for sums; RMSE and spread are computed by scaling by the largest magnitude, so squaring never overflows (readings `[1e200]` against 0 A give an RMSE of exactly 1e200). If a difference from the reference itself overflows, the calculation is repeated on values scaled by 1/4; only a final result beyond the float range gives `error`. All output is strict JSON.
+- **Failed attempts** have no reading: `assess_run` excludes them and reports them in `counts`, never as 0 A.
+
+**Ordering datasets.** `rank_by_rmse({name: assessment})` orders datasets by their **observed RMSE against the supplied reference**. All must have status `ok` and the same reference value and source. A shared reference is necessary but does not make the measurement conditions comparable; that is the caller's responsibility. Exactly equal RMSE values share a rank (1, 1, 3). The ordering does not identify a "most reliable device" and makes no claim of statistical significance.
+
+**Command (read-only):**
+```bash
+python -m src.archive_cli accuracy RUN_ID --reference-a 2.0 --reference-source "bench calibrator, certificate 1234"
+```
+- Prints the assessment of the run's successful readings as JSON, with the run ID, device, attempt counts, the reference and its source.
+- The reference is not stored. **Supplying it does not establish that this current was actually applied during the archived run**, and for runs of the supplied emulators the result is only the distance from your value, not device accuracy; the output's `interpretation` says so.
+- Exit codes: 0 for status `ok` or `no_data`; 1 for status `error` (the full report is still printed) or an operational failure (missing database or run); 2 for invalid arguments (missing, non-finite or non-numeric reference, blank source). Write a negative reference in exponent notation as `--reference-a=-1.5e3`.
+
+**Synthetic demo:** `python -m examples.accuracy_demo [--output PATH]` assesses three made-up datasets against one known 2.000 A reference. They are **synthetic profiles, not Greenlee, ENTES or CIRCUTOR data**:
+
+| Profile | Readings (A) | Bias | MAE | Spread | RMSE |
+|---|---|---|---|---|---|
+| `synthetic-biased-precise` | 2.10, 2.11, 2.09, 2.10, 2.10 | +0.1000 | 0.1000 | 0.0063 | 0.1002 |
+| `synthetic-unbiased-noisy` | 1.80, 2.20, 1.90, 2.10, 2.00 | 0.0000 | 0.1200 | 0.1414 | 0.1414 |
+| `synthetic-accurate` | 2.01, 1.99, 2.00, 2.02, 1.98 | 0.0000 | 0.0120 | 0.0141 | 0.0141 |
+
+The biased profile has by far the smallest spread, yet every reading is about 0.1 A high. The noisy profile is right on average, but a typical reading is 0.12 A off. RMSE combines both (0.100² + 0.0063² = 0.1002²), so the ordering by observed RMSE is accurate, biased-precise, unbiased-noisy. A bias shown as 0.0000 is about 4e-17 A in the JSON: readings such as 1.80 are not exact binary fractions. Example output: [`sample_results/accuracy_synthetic.json`](sample_results/README.md#synthetic-accuracy-example).
+
 ### Client behaviour
 
 `request_current_from_ammeter(port, command, timeout=5.0, host="127.0.0.1", max_response_bytes=1024)` in `Ammeters/client.py`:
@@ -465,7 +509,7 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **Timing:** timing is best-effort and depends on the operating system and its load; it is not a real-time guarantee. Each attempt records its scheduled and actual start. Missed slots are skipped, not caught up. The client's request deadline uses `time.monotonic`, which advanced in 15.625 ms steps on the development Windows machine.
 - **Connections:** each sample is a separate TCP connection, and a response ends when the emulator closes the connection. The emulators listen on IPv4 only. Separately, the client accepts only numeric IPv4 addresses, by design: this avoids hostname resolution and attempts to several addresses within one timeout budget (see [Client behaviour](#client-behaviour)).
 - **Emulator startup:** `main.py` and the demo wait a fixed 5 seconds for the emulators to start, and the emulators print their own output while being sampled.
-- **No accuracy assessment:** the emulators return independent random values with no known true current, so the statistics describe consistency within a run, not accuracy. The comparison does not rank devices.
+- **Accuracy:** the emulators return independent random values with no known true current, so their statistics describe spread within a run, not accuracy, and the three types cannot be compared or ranked by accuracy. The [accuracy metrics](#accuracy-against-a-known-reference) need a reference current that you supply; it is not stored, and supplying it does not show that it was applied. Only a constant reference is supported; the reference's own uncertainty is not modelled; no percentage metrics. Confidence intervals and significance tests are outside this descriptive assessment, because they need additional assumptions (such as independent readings and a distribution model). The comparison and the RMSE ordering do not identify a most reliable device.
 - **Run size:** at most 1,000,000 potential attempts per run, because all attempt records are kept in memory.
 - **Archive:**
   - One writer at a time.
@@ -477,7 +521,7 @@ The ports below are the ones used by `main.py`. Each emulator only answers a req
 - **CLI:** it must be run from the project root, with `--db`/`--config` before the command.
 - **Charts:** one run per HTML report (no cross-run dashboard). Markers are not clipped at the edge of the plot area, and the point charts draw at most 2000 attempts (larger runs are downsampled, with a note).
 - **Fault simulation:** one fixed scenario on the Greenlee logic, run only by its own demo; there is no configurable fault language and nothing is injected into normal runs. Step order relies on the client making exactly one connection per attempt; a deviation shows up as a mismatch and is not retried. The scenario record is a separate file, so `plot` on an archived simulation run shows its identity but not its verdict.
-- **Not implemented** (optional bonus): accuracy assessment. See [docs/design.md](docs/design.md#bonus-challenges).
+- **Partly implemented** (optional bonus): accuracy assessment, against a supplied reference only. See [docs/design.md](docs/design.md#bonus-challenges).
 - **Platforms:** tested only on the environments listed under [Tested platforms](#ammeter-emulators) (Windows Server 2025, Ubuntu 26.04 and macOS 26 runners with Python 3.11, and Windows 10 locally). On the macOS runner, requests started up to 85 ms after their target time.
 
 ## Fixes to the Supplied Code
