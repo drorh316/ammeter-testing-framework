@@ -127,7 +127,8 @@ def _limit(text: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.archive_cli",
-        description="List, show, compare and export archived ammeter runs.",
+        description="List, show, compare and export archived ammeter runs; report performance, write HTML "
+                    "reports and assess accuracy against a supplied reference (read-only).",
         epilog="--db/--config go before the command. Exit codes: 0 ok, 1 operational failure, 2 usage error.")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--db", type=Path, metavar="PATH",
